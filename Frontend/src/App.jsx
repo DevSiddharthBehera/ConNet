@@ -86,16 +86,17 @@ function App() {
               }}
             />
           ) : (
-            <Sidebar
-              token={token}
-              user={user}
-              selected={selected}
-              onSelect={(sel) => {
-                setSelected(sel);
-                setMobileView("chat");
-              }}
-              isMobile={isMobile}
-            />
+              <Sidebar
+                token={token}
+                user={user}
+                selected={selected}
+                onSelect={(sel) => {
+                  setSelected(sel);
+                  setMobileView("chat");
+                }}
+                isMobile={isMobile}
+                onUserChange={(u) => setUser(u)}
+              />
           )
         ) : (
           <>
@@ -107,6 +108,7 @@ function App() {
                 setSelected(sel);
               }}
               isMobile={isMobile}
+              onUserChange={(u) => setUser(u)}
             />
             <Chat
               token={token}

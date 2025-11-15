@@ -22,12 +22,16 @@ import {
   Checkbox,
   Stack,
   useDisclosure,
+  useToast,
 } from "@chakra-ui/react";
-import { AddIcon } from "@chakra-ui/icons";
+import { AddIcon, EditIcon } from "@chakra-ui/icons";
 import { io } from "socket.io-client";
 import API from "../api";
 
 export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
+  // onUserChange is optional callback passed from App to update logged-in user
+  // signature: onUserChange(updatedUser)
+  const onUserChange = arguments[0].onUserChange;
   const [users, setUsers] = useState([]);
   const [rooms, setRooms] = useState([]);
   const [query, setQuery] = useState("");
@@ -43,6 +47,9 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
     onOpen: openCreate,
     onClose: closeCreate,
   } = useDisclosure();
+  const toast = useToast();
+  const avatarInputRef = React.useRef();
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [groupName, setGroupName] = useState("");
   const [groupMembers, setGroupMembers] = useState([]);
 
@@ -239,6 +246,40 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
     }
   }
 
+  async function handleAvatarUpload(file) {
+    if (!file) return;
+    if (!token) return toast({ status: "error", title: "Not authenticated" });
+    try {
+      setUploadingAvatar(true);
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("purpose", "avatar");
+      const resp = await API.post("/files/upload", fd, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const url = resp.data?.url;
+      const updatedUser = resp.data?.user || { ...user, avatar: url };
+      // update local cached lists and parent user state if callback provided
+      setUsers((prev) => (prev || []).map((u) => (String(u.id) === String(updatedUser._id || updatedUser.id) ? { ...u, avatar: url } : u)));
+      if (typeof onUserChange === "function") onUserChange(updatedUser);
+      // also update local storage (App persists user in useEffect)
+      try {
+        localStorage.setItem("user", JSON.stringify(updatedUser));
+      } catch (err) {
+        /* ignore */
+      }
+      toast({ status: "success", title: "Avatar updated" });
+    } catch (err) {
+      console.error("Avatar upload failed", err);
+      toast({ status: "error", title: "Upload failed" });
+    } finally {
+      setUploadingAvatar(false);
+    }
+  }
+
   async function fetchLatestMessages(userList, roomList) {
     try {
       const timestamps = {};
@@ -321,13 +362,35 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
       <Box bg="white" p={4} borderRadius="md" boxShadow="sm">
         <VStack align="stretch" spacing={4}>
           <HStack spacing={3} align="center">
-            <Avatar src={user.avatar} name={user.displayName || user.username} />
+            <Box position="relative">
+              <Avatar src={user.avatar} name={user.displayName || user.username} />
+              <IconButton
+                size="xs"
+                aria-label="Change avatar"
+                icon={<EditIcon />}
+                position="absolute"
+                bottom={-1}
+                right={-1}
+                borderRadius="full"
+                onClick={() => avatarInputRef.current && avatarInputRef.current.click()}
+              />
+            </Box>
             <Box>
               <Text fontWeight="bold">{user.displayName || user.username}</Text>
               <Text fontSize="sm" color="gray.500">
                 {user.username}
               </Text>
             </Box>
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files && e.target.files[0];
+                if (f) handleAvatarUpload(f);
+              }}
+            />
           </HStack>
 
           <Input
