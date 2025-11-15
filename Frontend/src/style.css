@@ -1,0 +1,10 @@
+body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 0; }
+.app { padding: 16px; }
+.container { max-width: 900px; margin: 0 auto; }
+.header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+.messages { border: 1px solid #ddd; height: 400px; overflow:auto; padding: 8px; margin-bottom:8px; }
+.message { margin-bottom:6px; }
+.message .meta { font-size: 0.85em; color: #555 }
+.inputRow { display:flex; gap:8px }
+input[type="text"] { flex:1; padding:8px }
+button { padding:8px 12px }
