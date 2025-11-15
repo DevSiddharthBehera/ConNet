@@ -4,6 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const { authenticateToken } = require("../middleware/auth");
 const Message = require("../models/Message");
+const User = require("../models/User");
 
 const router = express.Router();
 
@@ -44,6 +45,25 @@ router.post(
           },
         });
         await msgDoc.save();
+      }
+
+      // handle avatar uploads specially: update user's avatar and broadcast
+      if (req.body && req.body.purpose === "avatar") {
+        try {
+          const updated = await User.findByIdAndUpdate(
+            req.user.id,
+            { avatar: url },
+            { new: true },
+          );
+          const io = req.app.get("io");
+          if (io) {
+            io.emit("user-updated", { id: req.user.id, avatar: url });
+          }
+          return res.json({ url, user: updated });
+        } catch (err) {
+          console.error("Avatar update error:", err);
+          // fall through to normal response below
+        }
       }
 
       // emit to recipient(s) if io available

@@ -89,6 +89,20 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
       }
     });
 
+    s.on("user-updated", (payload) => {
+      try {
+        const id = String(payload?.id || payload?._id);
+        if (!id) return;
+        setUsers((prev) =>
+          (prev || []).map((u) =>
+            String(u.id) === id ? { ...u, avatar: payload.avatar } : u,
+          ),
+        );
+      } catch (err) {
+        /* ignore */
+      }
+    });
+
     s.on("message", (msg) => {
       const fromId = String(msg.from?.id || msg.from?._id || msg.from);
       const toId = String(msg.to);
@@ -307,7 +321,7 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
       <Box bg="white" p={4} borderRadius="md" boxShadow="sm">
         <VStack align="stretch" spacing={4}>
           <HStack spacing={3} align="center">
-            <Avatar name={user.displayName || user.username} />
+            <Avatar src={user.avatar} name={user.displayName || user.username} />
             <Box>
               <Text fontWeight="bold">{user.displayName || user.username}</Text>
               <Text fontSize="sm" color="gray.500">
@@ -371,7 +385,7 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
                     >
                       <HStack spacing={2} align="start">
                         <Box position="relative">
-                          <Avatar size="sm" name={c.displayName} />
+                          <Avatar size="sm" src={c.avatar} name={c.displayName} />
                           {isOnline && !isSelf && (
                             <Box
                               position="absolute"

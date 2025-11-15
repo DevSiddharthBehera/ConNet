@@ -520,9 +520,10 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
         <HStack justify="space-between">
           <Box>
             <HStack spacing={3} align="center">
-              <Box position="relative">
+                <Box position="relative">
                 <Avatar
                   size="md"
+                  src={recipient?.avatar}
                   name={recipient?.displayName || recipient?.username}
                 />
                 {recipient?.id &&
