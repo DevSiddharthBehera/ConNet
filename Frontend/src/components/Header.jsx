@@ -36,15 +36,11 @@ export default function Header({ user, onSignOut }) {
         <Menu>
           <MenuButton
             as={IconButton}
-            icon={<Avatar name={user.displayName || user.username} size="sm" />}
+            icon={<Avatar src={user.avatar} name={user.displayName || user.username} size="sm" />}
             variant="ghost"
           />
           <MenuList>
-            <MenuItem
-              onClick={() => window.alert("Edit profile - not implemented")}
-            >
-              Edit Profile
-            </MenuItem>
+            <MenuItem onClick={() => window.alert("Edit profile - open sidebar profile modal")}>Edit Profile</MenuItem>
             <MenuItem onClick={onSignOut}>Logout</MenuItem>
           </MenuList>
         </Menu>

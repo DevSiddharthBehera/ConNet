@@ -25,8 +25,26 @@ const roomsRoutes = require("./routes/rooms");
 app.use("/api/rooms", roomsRoutes);
 
 // Example protected route
-app.get("/api/me", authenticateToken, (req, res) => {
-  res.json({ user: req.user });
+const User = require("./models/User");
+
+app.get("/api/me", authenticateToken, async (req, res) => {
+  try {
+    const id = req.user && (req.user.id || req.user._id);
+    if (!id) return res.status(400).json({ message: "Invalid token payload" });
+    const user = await User.findById(id, "username displayName avatar about createdAt");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    return res.json({
+      id: user._id.toString(),
+      username: user.username,
+      displayName: user.displayName,
+      avatar: user.avatar,
+      about: user.about,
+      createdAt: user.createdAt,
+    });
+  } catch (err) {
+    console.error("GET /api/me error", err);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 // Serve uploads
