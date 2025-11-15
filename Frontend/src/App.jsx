@@ -43,9 +43,7 @@ function App() {
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  useEffect(() => {
-    console.log('[App] selected changed ->', selected)
-  }, [selected])
+  useEffect(() => {}, [selected])
 
   return (
     <Box minH="100vh" bg="gray.50">
@@ -60,7 +58,7 @@ function App() {
           )
         ) : (
           <>
-            <Sidebar token={token} user={user} selected={selected} onSelect={(sel) => { console.log('[App] onSelect wrapper ->', sel); setSelected(sel) }} isMobile={isMobile} />
+            <Sidebar token={token} user={user} selected={selected} onSelect={(sel) => { setSelected(sel) }} isMobile={isMobile} />
             <Chat token={token} user={user} to={selected?.id} recipient={selected} />
           </>
         )}

@@ -10,17 +10,12 @@ export default function VideoModal({ isOpen, onClose, localStream, remoteStream,
     
     // Give the DOM a moment to render the video elements
     const timeout = setTimeout(() => {
-      console.log('VideoModal: Attaching streams after render')
-      
       if (localVideoRef.current && localStream) {
-        console.log('Attaching local stream with', localStream.getTracks().length, 'tracks')
         localVideoRef.current.srcObject = localStream
         localVideoRef.current.muted = true
         localVideoRef.current.play().catch(err => console.error('Local play error:', err.message))
       }
-      
       if (remoteVideoRef.current && remoteStream) {
-        console.log('Attaching remote stream with', remoteStream.getTracks().length, 'tracks')
         remoteVideoRef.current.srcObject = remoteStream
         remoteVideoRef.current.muted = false
         remoteVideoRef.current.play().catch(err => console.error('Remote play error:', err.message))

@@ -107,10 +107,7 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
       setUsers(fetchedUsers)
       setRooms(fetchedRooms)
       // fetch latest message timestamp for each user/room
-      console.log('[Sidebar] fetched lists', { users: fetchedUsers.length, rooms: fetchedRooms.length })
       const { timestamps, contents } = await fetchLatestMessages(fetchedUsers, fetchedRooms)
-      console.log('[Sidebar] fetchLatestMessages returned', { timestampsCount: Object.keys(timestamps).length })
-      console.log('[Sidebar] default-select check', { isMobile, selectedPresent: !!selected, selected, onSelectPresent: !!onSelect })
       // if nothing is selected, default-select the top conversation (skip auto-open on mobile)
       if ((!selected || !selected.id) && onSelect && !isMobile) {
         // build conversations locally and sort by timestamps
@@ -118,7 +115,7 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
           ...fetchedUsers.map(u => ({ ...u, type: 'user', displayName: u.displayName || u.username })),
           ...fetchedRooms.map(r => ({ ...r, type: 'room', displayName: r.name || 'Group' }))
         ]
-        console.log('[Sidebar] built convs', { length: convs.length, sample: convs.slice(0,3) })
+        
         // Sort by timestamp (newest first). If timestamps tie or missing, prefer a non-self user, then a room, then any.
         convs.sort((a, b) => {
           const ta = timestamps[a.id] || 0
@@ -149,7 +146,7 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
               if (firstRoom) first = firstRoom
             }
           }
-          console.log('[Sidebar] default-select ->', { id: first.id, displayName: first.displayName, ts: timestamps[first.id], allZero })
+          
           onSelect({ id: first.id, displayName: first.displayName, isGroup: first.type === 'room' })
         }
       }

@@ -34,7 +34,6 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
 
   // Handle conversation changes: always reload from server on click
   useEffect(() => {
-    console.log('[Chat] conversation change effect fired', { to, socketId: socket?.id, recipient })
     if (!socket || !to) return
     activeIdRef.current = to
     isGroupRef.current = !!recipient?.isGroup
@@ -45,9 +44,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
     loadHistory(to)
   }, [to, socket, recipient])
 
-  useEffect(() => {
-    console.log('[Chat] props update', { to, recipient })
-  }, [to, recipient])
+  useEffect(() => {}, [to, recipient])
 
   async function fetchRoomInfo(roomId) {
     try {
@@ -64,8 +61,8 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
     const s = io('http://localhost:4000', { auth: { token } })
     setSocket(s)
 
-    s.on('connect', () => console.log('socket connected', s.id))
-    s.on('connected', (payload) => console.log('server says connected', payload))
+    s.on('connect', () => {})
+    s.on('connected', (payload) => {})
 
     s.on('message', (msg) => {
       const fromId = String(msg?.from?._id || msg?.from?.id || msg?.from)
@@ -184,8 +181,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
     s.on('call-answered', async ({ from, answer }) => {
       const peer = pcRef.current
       if (peer) {
-        try {
-          console.log('call-answered: setting remote description')
+          try {
           await peer.setRemoteDescription(answer)
         } catch (err) { console.error('call-answered remote desc error', err) }
       } else {
@@ -198,7 +194,6 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       const peer = pcRef.current
       if (peer && candidate) {
         try { 
-          console.log('Adding ICE candidate', candidate) 
           await peer.addIceCandidate(candidate) 
         } catch (err) { console.error('Add ICE error', err) }
       } else if (!peer) {
@@ -264,9 +259,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
   async function startCall() {
     if (!to) return alert('Set recipient userId or roomId')
     try {
-      console.log('startCall: requesting media')
-      const local = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
-      console.log('startCall: got local stream', local)
+    const local = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
       setLocalStream(local)
       setCallActive(true)
       // Delay modal opening to ensure state updates first
@@ -282,7 +275,6 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       local.getTracks().forEach(track => newPc.addTrack(track, local))
 
       newPc.ontrack = (ev) => {
-        console.log('startCall ontrack received', ev.streams[0])
         setRemoteStream(ev.streams[0])
       }
 
@@ -303,9 +295,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
     if (!incomingCall) return
     const { from, offer } = incomingCall
     try {
-      console.log('acceptCall: requesting media')
-      const local = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
-      console.log('acceptCall: got local stream', local)
+    const local = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
       setLocalStream(local)
       // Ensure callActive is true so modal renders
       setCallActive(true)
@@ -320,7 +310,6 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       local.getTracks().forEach(track => newPc.addTrack(track, local))
 
       newPc.ontrack = (ev) => {
-        console.log('acceptCall ontrack received', ev.streams[0])
         setRemoteStream(ev.streams[0])
       }
 
