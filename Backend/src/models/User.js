@@ -6,6 +6,7 @@ const UserSchema = new Schema({
   password: { type: String, required: true },
   displayName: { type: String },
   avatar: { type: String },
+  about: { type: String },
   oauth: {
     provider: String,
     providerId: String,
