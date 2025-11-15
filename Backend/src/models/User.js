@@ -1,4 +1,4 @@
-const { mongoose } = require('../db');
+const { mongoose } = require("../db");
 const { Schema } = mongoose;
 
 const UserSchema = new Schema({
@@ -8,9 +8,9 @@ const UserSchema = new Schema({
   oauth: {
     provider: String,
     providerId: String,
-    email: String
+    email: String,
   },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
 });
 
-module.exports = mongoose.models.User || mongoose.model('User', UserSchema);
+module.exports = mongoose.models.User || mongoose.model("User", UserSchema);

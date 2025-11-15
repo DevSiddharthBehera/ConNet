@@ -59,7 +59,6 @@ After seeding, start the backend:
 npm run dev
 ```
 
-
 3. Run in development
 
 ```bash
@@ -84,7 +83,7 @@ Client hints (Socket.IO)
 Connect with token in `auth`:
 
 ```js
-const socket = io('http://localhost:4000', { auth: { token } });
+const socket = io("http://localhost:4000", { auth: { token } });
 ```
 
 Basic events
@@ -93,4 +92,3 @@ Basic events
 - `typing` — typing indicator
 - `file` — transfer file blob
 - `call-user`, `answer-call`, `ice-candidate` — WebRTC signalling
-

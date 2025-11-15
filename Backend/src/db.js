@@ -1,7 +1,8 @@
-const mongoose = require('mongoose');
-require('dotenv').config();
+const mongoose = require("mongoose");
+require("dotenv").config();
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/chatapp';
+const MONGODB_URI =
+  process.env.MONGODB_URI || "mongodb://localhost:27017/chatapp";
 
 async function connect() {
   try {
@@ -9,9 +10,9 @@ async function connect() {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
-    console.log('Connected to MongoDB');
+    console.log("Connected to MongoDB");
   } catch (err) {
-    console.error('MongoDB connection error:', err.message);
+    console.error("MongoDB connection error:", err.message);
     process.exit(1);
   }
 }
