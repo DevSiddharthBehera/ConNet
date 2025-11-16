@@ -297,6 +297,35 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
       }));
       setUsers(fetchedUsers);
       setRooms(fetchedRooms);
+
+      // Sync the logged-in user's richer payload (avatar, signed URLs) if available
+      if (typeof onUserChange === "function") {
+        const myId = String(user?.id || user?._id || "");
+        if (myId) {
+          const selfEntry = fetchedUsers.find((u) => String(u.id) === myId);
+          if (selfEntry) {
+            const merged = {
+              ...(user || {}),
+              ...selfEntry,
+            };
+            // Update only if avatar metadata actually changed to avoid redundant renders
+            const avatarChanged =
+              merged.avatar !== user?.avatar ||
+              merged.avatarSignedUrl !== user?.avatarSignedUrl ||
+              merged.avatarSignedExpiresAt !== user?.avatarSignedExpiresAt;
+            const profileChanged =
+              merged.displayName !== user?.displayName || merged.about !== user?.about;
+            if (avatarChanged || profileChanged) {
+              onUserChange(merged);
+              try {
+                localStorage.setItem("user", JSON.stringify(merged));
+              } catch (err) {
+                /* ignore */
+              }
+            }
+          }
+        }
+      }
       // fetch latest message timestamp for each user/room
       const { timestamps, contents } = await fetchLatestMessages(
         fetchedUsers,

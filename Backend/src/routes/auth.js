@@ -43,6 +43,8 @@ router.post("/register", async (req, res) => {
         id: user._id.toString(),
         username: user.username,
         displayName: user.displayName,
+        avatar: user.avatar,
+        about: user.about,
       },
     });
   } catch (err) {
@@ -80,6 +82,8 @@ router.post("/login", async (req, res) => {
         id: user._id.toString(),
         username: user.username,
         displayName: user.displayName,
+        avatar: user.avatar,
+        about: user.about,
       },
     });
   } catch (err) {
@@ -174,6 +178,8 @@ router.get("/google/callback", async (req, res) => {
       id: user._id.toString(),
       username: user.username,
       displayName: user.displayName,
+      avatar: user.avatar,
+      about: user.about,
     };
 
     // If opened as popup, postMessage back to opener and close
