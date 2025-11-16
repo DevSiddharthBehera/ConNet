@@ -61,6 +61,7 @@ function App() {
     <Box minH="100vh" bg="gray.50">
       <Header
         user={user}
+        token={token}
         onSignOut={() => {
           setToken(null);
           setUser(null);

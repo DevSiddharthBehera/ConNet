@@ -2,7 +2,6 @@ import React, { useEffect, useState, useRef } from "react";
 import {
   Box,
   VStack,
-  Avatar,
   Text,
   Input,
   Divider,
@@ -28,22 +27,7 @@ import { AddIcon, EditIcon } from "@chakra-ui/icons";
 import { io } from "socket.io-client";
 import API from "../api";
 import Cropper from "react-easy-crop";
-
-// Helper to resolve avatar URLs to absolute URLs
-function resolveAvatarUrl(avatar) {
-  if (!avatar) return undefined;
-  if (avatar.startsWith("http://") || avatar.startsWith("https://")) {
-    return avatar; // Already absolute
-  }
-  // Convert relative path to absolute backend URL
-  try {
-    const backendOrigin = API.defaults.baseURL.replace(/\/api\/?$/, "");
-    return `${backendOrigin}${avatar}`;
-  } catch (e) {
-    console.warn("Failed to resolve avatar URL:", avatar, e);
-    return avatar;
-  }
-}
+import SecureAvatar from "./SecureAvatar";
 
 // Resize an image File to fixed width/height (center-cover) and return a new File
 async function resizeImageFile(file, width, height) {
@@ -229,7 +213,15 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
         setUsers((prev) =>
           (prev || []).map((u) => {
             const userId = String(u.id || u._id || "");
-            return userId === updatedId ? { ...u, avatar: payload.avatar } : u;
+            return userId === updatedId
+              ? {
+                  ...u,
+                  avatar: payload.avatar,
+                  avatarSignedUrl: payload.avatarSignedUrl || u.avatarSignedUrl,
+                  avatarSignedExpiresAt:
+                    payload.avatarSignedExpiresAt || u.avatarSignedExpiresAt,
+                }
+              : u;
           }),
         );
       } catch (err) {
@@ -364,6 +356,8 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
             displayName: first.displayName,
             isGroup: first.type === "room",
             avatar: first.avatar,
+            avatarSignedUrl: first.avatarSignedUrl,
+            avatarSignedExpiresAt: first.avatarSignedExpiresAt,
             username: first.username || first.name,
           });
         }
@@ -425,11 +419,24 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
           headers: { 'Content-Type': 'multipart/form-data', Authorization: `Bearer ${token}` },
         });
         const url2 = resp2.data?.url;
-        const updatedUser2 = resp2.data?.user || { ...user, avatar: url2 };
+        const signed2 = resp2.data?.signedUrl;
+        const signedExpiresAt2 = resp2.data?.signedExpiresAt;
+        const updatedUser2 = resp2.data?.user
+          ? { ...resp2.data.user, avatar: url2 || resp2.data.user.avatar }
+          : { ...user, avatar: url2 };
+        if (signed2) updatedUser2.avatarSignedUrl = signed2;
+        if (signedExpiresAt2) updatedUser2.avatarSignedExpiresAt = signedExpiresAt2;
         setUsers((prev) => (prev || []).map((u) => {
           const userId = String(u.id || u._id || '');
           const updatedId = String(updatedUser2._id || updatedUser2.id || '');
-          return userId === updatedId ? { ...u, avatar: url2 } : u;
+          return userId === updatedId
+            ? {
+                ...u,
+                avatar: url2,
+                avatarSignedUrl: signed2 || u.avatarSignedUrl,
+                avatarSignedExpiresAt: signedExpiresAt2 || u.avatarSignedExpiresAt,
+              }
+            : u;
         }));
         if (typeof onUserChange === 'function') onUserChange(updatedUser2);
         try { localStorage.setItem('user', JSON.stringify(updatedUser2)); } catch (e) {}
@@ -446,11 +453,24 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
         headers: { 'Content-Type': 'multipart/form-data', Authorization: `Bearer ${token}` },
       });
       const url = resp.data?.url;
-      const updatedUser = resp.data?.user || { ...user, avatar: url };
+      const signed = resp.data?.signedUrl;
+      const signedExpiresAt = resp.data?.signedExpiresAt;
+      const updatedUser = resp.data?.user
+        ? { ...resp.data.user, avatar: url || resp.data.user.avatar }
+        : { ...user, avatar: url };
+      if (signed) updatedUser.avatarSignedUrl = signed;
+      if (signedExpiresAt) updatedUser.avatarSignedExpiresAt = signedExpiresAt;
       setUsers((prev) => (prev || []).map((u) => {
         const userId = String(u.id || u._id || '');
         const updatedId = String(updatedUser._id || updatedUser.id || '');
-        return userId === updatedId ? { ...u, avatar: url } : u;
+        return userId === updatedId
+          ? {
+              ...u,
+              avatar: url,
+              avatarSignedUrl: signed || u.avatarSignedUrl,
+              avatarSignedExpiresAt: signedExpiresAt || u.avatarSignedExpiresAt,
+            }
+          : u;
       }));
       if (typeof onUserChange === 'function') onUserChange(updatedUser);
       try { localStorage.setItem('user', JSON.stringify(updatedUser)); } catch (e) {}
@@ -577,7 +597,13 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
         <VStack align="stretch" spacing={4}>
           <HStack spacing={3} align="center">
             <Box position="relative">
-              <Avatar src={resolveAvatarUrl(user?.avatar)} name={user?.displayName || user?.username} />
+              <SecureAvatar
+                token={token}
+                src={user?.avatar}
+                initialUrl={user?.avatarSignedUrl}
+                initialExpiresAt={user?.avatarSignedExpiresAt}
+                name={user?.displayName || user?.username}
+              />
               <IconButton
                 size="xs"
                 aria-label="Change avatar"
@@ -657,6 +683,8 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
                           displayName: c.displayName,
                           isGroup: c.type === "room",
                           avatar: c.avatar,
+                          avatarSignedUrl: c.avatarSignedUrl,
+                          avatarSignedExpiresAt: c.avatarSignedExpiresAt,
                           username: c.username || c.name,
                         });
                         // Mark as read
@@ -668,7 +696,14 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
                     >
                       <HStack spacing={2} align="start">
                         <Box position="relative">
-                          <Avatar size="sm" src={resolveAvatarUrl(c.avatar)} name={c.displayName} />
+                          <SecureAvatar
+                            token={token}
+                            size="sm"
+                            src={c.avatar}
+                            initialUrl={c.avatarSignedUrl}
+                            initialExpiresAt={c.avatarSignedExpiresAt}
+                            name={c.displayName}
+                          />
                           {isOnline && !isSelf && (
                             <Box
                               position="absolute"
@@ -866,7 +901,14 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
           <ModalBody>
             <Box display="flex" alignItems="center" flexDirection="column" mb={4}>
               <Box position="relative">
-                <Avatar size="xl" src={resolveAvatarUrl(user?.avatar)} name={user?.displayName || user?.username} />
+                <SecureAvatar
+                  token={token}
+                  size="xl"
+                  src={user?.avatar}
+                  initialUrl={user?.avatarSignedUrl}
+                  initialExpiresAt={user?.avatarSignedExpiresAt}
+                  name={user?.displayName || user?.username}
+                />
                 <IconButton
                   aria-label="Change avatar"
                   icon={<EditIcon />}

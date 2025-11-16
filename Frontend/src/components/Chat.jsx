@@ -15,7 +15,6 @@ import {
   ModalHeader,
   ModalBody,
   ModalFooter,
-  Avatar,
   Input,
   Flex,
   InputGroup,
@@ -32,32 +31,56 @@ import {
 } from "@chakra-ui/icons";
 import { PhoneIcon, ViewIcon } from "@chakra-ui/icons";
 import VideoModal from "./VideoModal";
+import SecureAvatar from "./SecureAvatar";
+import useSupabaseImage from "../hooks/useSupabaseImage";
 
-// Helper to resolve avatar URLs to absolute URLs
-function resolveAvatarUrl(avatar) {
-  if (!avatar) return undefined;
-  if (avatar.startsWith("http://") || avatar.startsWith("https://")) {
-    return avatar; // Already absolute
+function AttachmentPreview({ file, token, isOwn }) {
+  if (!file) return null;
+  const ref = file.url || file.storageRef || null;
+  const initialUrl = file.signedUrl;
+  const initialExpiresAt = file.signedExpiresAt;
+  const resolvedUrl = useSupabaseImage(ref, token, {
+    initialUrl,
+    initialExpiresAt,
+  });
+  let displayUrl = resolvedUrl || initialUrl || null;
+  if (!displayUrl && typeof ref === "string" && !ref.startsWith("supabase://")) {
+    displayUrl = ref;
   }
-  // Convert relative path to absolute backend URL
-  try {
-    const backendOrigin = ApiClient.defaults.baseURL.replace(/\/api\/?$/, "");
-    return `${backendOrigin}${avatar}`;
-  } catch (e) {
-    console.warn("Failed to resolve avatar URL:", avatar, e);
-    return avatar;
+
+  const mime = file.mimeType || file.mime || "";
+  const fileName =
+    file.fileName || file.file_name || file.name ||
+    (typeof file.url === "string" ? file.url.split("/").pop() : undefined);
+
+  if (!displayUrl) {
+    return null;
   }
+
+  if (mime && mime.startsWith && mime.startsWith("image/")) {
+    return (
+      <img
+        src={displayUrl}
+        alt={fileName || "image"}
+        style={{ maxWidth: "100%", borderRadius: 6 }}
+      />
+    );
+  }
+
+  if (mime && mime.startsWith && mime.startsWith("video/")) {
+    return (
+      <video controls src={displayUrl} style={{ maxWidth: "100%", borderRadius: 6 }} />
+    );
+  }
+
+  return (
+    <a href={displayUrl} target="_blank" rel="noreferrer" style={{ color: isOwn ? "#e6f0ff" : "#3182ce" }}>
+      {fileName || displayUrl}
+    </a>
+  );
 }
 
 export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
-  useEffect(() => {
-    try {
-      console.log("Chat recipient:", recipient);
-      console.log("Chat avatar resolved:", resolveAvatarUrl(recipient?.avatar));
-    } catch (e) {
-      /* ignore */
-    }
-  }, [recipient]);
   const [socket, setSocket] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
@@ -225,57 +248,74 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
     });
 
     s.on("file", (payload) => {
-      const fromId = String(
-        payload?.from?._id || payload?.from?.id || payload?.from,
-      );
-      const myId = String(user?.id || user?._id);
-      const activeId = String(activeIdRef.current || "");
-      const isGroupActive = isGroupRef.current && activeId;
-      const isSelfActive = activeId === myId;
-      let conversationId = null;
-      if (payload.isGroup) {
-        conversationId = String(payload.to);
-      } else if (isSelfActive) {
-        if (fromId === myId && String(payload?.to) === myId) {
-          conversationId = myId;
+      try {
+        const fileId = (payload && (payload.id || payload._id)) || null;
+        const fromId = String(
+          payload?.from?._id || payload?.from?.id || payload?.from,
+        );
+        const myId = String(user?.id || user?._id);
+        const activeId = String(activeIdRef.current || "");
+        const isGroupActive = isGroupRef.current && activeId;
+        const isSelfActive = activeId === myId;
+        let conversationId = null;
+        if (payload.isGroup) {
+          conversationId = String(payload.to);
+        } else if (isSelfActive) {
+          if (fromId === myId && String(payload?.to) === myId) {
+            conversationId = myId;
+          } else {
+            conversationId = fromId === myId ? String(payload?.to) : fromId;
+          }
+        } else if (fromId === myId) {
+          conversationId = activeId; // file I sent belongs to currently open chat id
         } else {
-          conversationId = fromId === myId ? String(payload?.to) : fromId;
+          conversationId = fromId;
         }
-      } else if (fromId === myId) {
-        conversationId = activeId; // file I sent belongs to currently open chat id
-      } else {
-        conversationId = fromId;
-      }
-      if (!conversationId) return;
+        if (!conversationId) return;
 
-      setConversationCache((c) => {
-        const existing = c[conversationId]?.messages || [];
-        if (
-          payload &&
-          payload.url &&
-          existing.some((m) => m.file && m.file.url === payload.url)
-        )
-          return c;
-        const updated = [...existing, { from: payload.from, file: payload }];
-        return {
-          ...c,
-          [conversationId]: {
-            messages: updated,
-            lastFetched: Date.now(),
-            scrollY: c[conversationId]?.scrollY || 0,
-          },
+        // Normalize a message object so history and socket payloads match
+        const fileData = payload.file || payload;
+        const msgObj = {
+          _id: fileId,
+          from: payload.from,
+          to: payload.to,
+          file: fileData ? { ...fileData } : undefined,
+          createdAt: payload.createdAt || payload.created_at || new Date().toISOString(),
         };
-      });
-      if (conversationId === activeId) {
-        setMessages((prev) => {
+
+        setConversationCache((c) => {
+          const existing = c[conversationId]?.messages || [];
+          // dedupe by id if available, otherwise by URL
           if (
-            payload &&
-            payload.url &&
-            prev.some((m) => m.file && m.file.url === payload.url)
+            fileId
+              ? existing.some((m) => String(m._id || m.id) === String(fileId))
+              : fileData && fileData.url && existing.some((m) => m.file && m.file.url === fileData.url)
           )
-            return prev;
-          return [...prev, { from: payload.from, file: payload }];
+            return c;
+          const updated = [...existing, msgObj];
+          return {
+            ...c,
+            [conversationId]: {
+              messages: updated,
+              lastFetched: Date.now(),
+              scrollY: c[conversationId]?.scrollY || 0,
+            },
+          };
         });
+
+        if (conversationId === activeId) {
+          setMessages((prev) => {
+            if (
+              fileId
+                ? prev.some((m) => String(m._id || m.id) === String(fileId))
+                : fileData && fileData.url && prev.some((m) => m.file && m.file.url === fileData.url)
+            )
+              return prev;
+            return [...prev, msgObj];
+          });
+        }
+      } catch (err) {
+        console.error("Error handling file socket event", err);
       }
     });
 
@@ -389,6 +429,8 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
         },
       });
       // server will emit the file event to recipient and back to sender; don't duplicate here
+      // clear selected filename after successful upload
+      setSelectedFileName("");
     } catch (err) {
       console.error("Upload failed", err);
     }
@@ -552,10 +594,13 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
         <HStack justify="space-between">
           <Box>
             <HStack spacing={3} align="center">
-                <Box position="relative">
-                <Avatar
+              <Box position="relative">
+                <SecureAvatar
+                  token={token}
                   size="md"
-                  src={resolveAvatarUrl(recipient?.avatar)}
+                  src={recipient?.avatar}
+                  initialUrl={recipient?.avatarSignedUrl}
+                  initialExpiresAt={recipient?.avatarSignedExpiresAt}
                   name={recipient?.displayName || recipient?.username}
                 />
                 {recipient?.id &&
@@ -638,7 +683,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       <div style={{ display: "flex", gap: 12 }}>
         <div style={{ flex: 1 }}>
           <div className="messages" ref={messagesRef}>
-            {messages.map((m, i) => {
+              {messages.map((m, i) => {
               if (m.system)
                 return (
                   <div
@@ -654,6 +699,8 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
               const myId = user?.id || user?._id;
               const isMe = String(fromId) === String(myId);
               const content = m.content || m.text || "";
+              const file = m.file || null;
+
               return (
                 <div
                   key={m._id || m.id || i}
@@ -674,6 +721,11 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
                   >
                     <div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>
                       {content}
+                      {file ? (
+                        <div style={{ marginTop: 8 }}>
+                          <AttachmentPreview file={file} token={token} isOwn={isMe} />
+                        </div>
+                      ) : null}
                     </div>
                     <div
                       style={{
@@ -804,15 +856,20 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
           <ModalBody pt={0} pb={2}>
             {incomingCall && (
               <HStack spacing={4} align="center">
-                <Avatar
+                <SecureAvatar
+                  token={token}
+                  size="md"
+                  src={incomingCall.from?.avatar}
+                  initialUrl={incomingCall.from?.avatarSignedUrl}
+                  initialExpiresAt={incomingCall.from?.avatarSignedExpiresAt}
                   name={
-                    incomingCall.from.displayName || incomingCall.from.username
+                    incomingCall?.from?.displayName || incomingCall?.from?.username
                   }
                 />
                 <Box>
                   <Text fontWeight="semibold" fontSize="sm">
-                    {incomingCall.from.displayName ||
-                      incomingCall.from.username}
+                    {incomingCall?.from?.displayName ||
+                      incomingCall?.from?.username}
                   </Text>
                   <Text fontSize="xs" color="gray.500">
                     is calling you...
