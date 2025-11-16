@@ -23,16 +23,46 @@ import {
   MenuButton,
   MenuList,
   MenuItem,
+  List,
+  ListItem,
+  Badge,
+  Stack,
+  useToast,
+  Spinner,
 } from "@chakra-ui/react";
 import {
   ArrowForwardIcon,
   AttachmentIcon,
   ArrowBackIcon,
+  RepeatIcon,
 } from "@chakra-ui/icons";
-import { PhoneIcon, ViewIcon } from "@chakra-ui/icons";
+import { PhoneIcon } from "@chakra-ui/icons";
 import VideoModal from "./VideoModal";
 import SecureAvatar from "./SecureAvatar";
 import useSupabaseImage from "../hooks/useSupabaseImage";
+
+const P2P_CHUNK_SIZE = 64 * 1024; // 64KB per chunk
+
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const slice = bytes.subarray(i, i + chunk);
+    binary += String.fromCharCode.apply(null, slice);
+  }
+  return btoa(binary);
+}
+
+function base64ToUint8Array(base64) {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
 
 function AttachmentPreview({ file, token, isOwn }) {
   if (!file) return null;
@@ -82,6 +112,7 @@ function AttachmentPreview({ file, token, isOwn }) {
 
 export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
   const [socket, setSocket] = useState(null);
+  const socketRef = useRef(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [incomingCall, setIncomingCall] = useState(null);
@@ -91,7 +122,6 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
   const [pc, setPc] = useState(null); // retained for UI state if needed
   const pcRef = useRef(null); // use ref to avoid stale closures in socket handlers
   const callPeerIdRef = useRef(null); // track the other participant's user id for reliable end-call signaling
-  const [isSharingScreen, setIsSharingScreen] = useState(false);
   const [onlineIds, setOnlineIds] = useState([]);
   const [videoPlaying, setVideoPlaying] = useState({
     local: false,
@@ -111,15 +141,53 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
   const docInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const zipInputRef = useRef(null);
+  const p2pFileInputRef = useRef(null);
   const [selectedFileName, setSelectedFileName] = useState("");
+  const toast = useToast();
+
+  const {
+    isOpen: isP2POpen,
+    onOpen: openP2PModal,
+    onClose: closeP2PModal,
+  } = useDisclosure();
+  const [p2pFiles, setP2pFiles] = useState([]);
+  const [p2pSending, setP2pSending] = useState(false);
+  const [incomingP2P, setIncomingP2P] = useState(null);
+  const pendingP2PTransfersRef = useRef(new Map());
+  const incomingP2PChunksRef = useRef(new Map());
+  const objectUrlsRef = useRef([]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        objectUrlsRef.current.forEach((url) => {
+          try {
+            URL.revokeObjectURL(url);
+          } catch (err) {
+            /* ignore */
+          }
+        });
+      } catch (err) {
+        /* ignore */
+      }
+      objectUrlsRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    if (socket) {
+      socketRef.current = socket;
+    }
+  }, [socket]);
 
   // Handle conversation changes: always reload from server on click
   useEffect(() => {
-    if (!socket || !to) return;
+    const activeSocket = socketRef.current;
+    if (!activeSocket || !to) return;
     activeIdRef.current = to;
     isGroupRef.current = !!recipient?.isGroup;
-    socket.emit("join-room", to);
-    socket.emit("mark-read", { conversationId: to });
+    activeSocket.emit("join-room", to);
+    activeSocket.emit("mark-read", { conversationId: to });
     if (recipient && recipient.isGroup) fetchRoomInfo(to);
     else setRoomInfo(null);
     // Force fresh history fetch every time user/group is selected
@@ -147,9 +215,12 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
 
   useEffect(() => {
     const s = io("http://localhost:4000", { auth: { token } });
+    socketRef.current = s;
     setSocket(s);
 
-    s.on("connect", () => {});
+    s.on("connect", () => {
+      socketRef.current = s;
+    });
     s.on("connected", (payload) => {});
 
     s.on("message", (msg) => {
@@ -319,6 +390,197 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       }
     });
 
+    s.on("p2p-request", (payload) => {
+      if (!payload || !payload.requestId) return;
+      setIncomingP2P(payload);
+      const senderName =
+        payload.from?.displayName || payload.from?.username || "Someone";
+      setMessages((prev) => [
+        ...prev,
+        {
+          system: true,
+          text: `${senderName} wants to start a P2P transfer (${payload.files?.length || 0} file${
+            payload.files && payload.files.length === 1 ? "" : "s"
+          }).`,
+        },
+      ]);
+    });
+
+    s.on("p2p-response", (payload) => {
+      if (!payload || !payload.requestId) return;
+      const { requestId, accepted, from, reason } = payload;
+      const pending = pendingP2PTransfersRef.current.get(requestId);
+      if (!pending) return;
+      const responderName = from?.displayName || from?.username || "Recipient";
+      if (!accepted) {
+        resetP2PRequest(requestId);
+        const description =
+          reason === "offline"
+            ? "Recipient is offline"
+            : `${responderName} declined the transfer`;
+        toast({ status: "warning", title: "P2P transfer declined", description });
+        setMessages((prev) => [
+          ...prev,
+          {
+            system: true,
+            text: `${responderName} declined the P2P transfer request.`,
+          },
+        ]);
+        return;
+      }
+      toast({ status: "info", title: "P2P request accepted", description: "Sending files" });
+      setMessages((prev) => [
+        ...prev,
+        {
+          system: true,
+          text: `${responderName} accepted the P2P transfer request. Uploading files...`,
+        },
+      ]);
+      processAcceptedP2P(requestId, pending.to);
+    });
+
+    s.on("p2p-response-local", (payload) => {
+      if (!payload || !payload.requestId) return;
+      if (!payload.accepted) {
+        setIncomingP2P(null);
+      }
+    });
+
+    s.on("p2p-file-chunk", (payload) => {
+      if (!payload) return;
+      const {
+        requestId,
+        fileId,
+        index,
+        totalChunks,
+        chunk,
+        meta,
+        from,
+      } = payload;
+      if (!requestId || typeof fileId === "undefined") return;
+      if (typeof index !== "number" || typeof totalChunks !== "number") return;
+      if (!chunk) return;
+      const key = `${requestId}:${fileId}`;
+      let entry = incomingP2PChunksRef.current.get(key);
+      if (!entry) {
+        entry = {
+          buffers: new Array(totalChunks).fill(null),
+          received: 0,
+          totalChunks,
+          meta: meta || {},
+          from,
+        };
+        incomingP2PChunksRef.current.set(key, entry);
+      }
+      if (!entry.buffers[index]) {
+        try {
+          entry.buffers[index] = base64ToUint8Array(chunk);
+          entry.received += 1;
+        } catch (err) {
+          console.error("Failed to decode P2P chunk", err);
+          return;
+        }
+      }
+      if (entry.received >= entry.totalChunks) {
+        incomingP2PChunksRef.current.delete(key);
+        const validBuffers = entry.buffers.filter(Boolean);
+        if (!validBuffers.length) return;
+        const totalLength = validBuffers.reduce(
+          (sum, arr) => sum + arr.length,
+          0,
+        );
+        const merged = new Uint8Array(totalLength);
+        let offset = 0;
+        validBuffers.forEach((arr) => {
+          merged.set(arr, offset);
+          offset += arr.length;
+        });
+        const mimeType = entry.meta.type || "application/octet-stream";
+        const blob = new Blob([merged], { type: mimeType });
+        const objectUrl = URL.createObjectURL(blob);
+        objectUrlsRef.current.push(objectUrl);
+        const timestamp = new Date().toISOString();
+        const senderInfo = entry.from || {};
+        const conversationIdRaw =
+          senderInfo.id || senderInfo._id || senderInfo.userId || senderInfo;
+        const conversationId = conversationIdRaw
+          ? String(conversationIdRaw)
+          : null;
+        const message = {
+          _id: `${requestId}-${fileId}`,
+          from: senderInfo,
+          to: user?.id || user?._id,
+          file: {
+            url: objectUrl,
+            fileName: entry.meta.name || `file-${fileId + 1}`,
+            mimeType,
+            size: entry.meta.size || merged.length,
+          },
+          createdAt: timestamp,
+        };
+        if (conversationId) {
+          setConversationCache((cache) => {
+            const existing = cache[conversationId]?.messages || [];
+            if (
+              existing.some(
+                (m) => String(m._id || m.id) === String(message._id || message.id),
+              )
+            )
+              return cache;
+            return {
+              ...cache,
+              [conversationId]: {
+                messages: [...existing, message],
+                lastFetched: Date.now(),
+                scrollY: cache[conversationId]?.scrollY || 0,
+              },
+            };
+          });
+          const activeId = String(activeIdRef.current || "");
+          if (activeId === conversationId) {
+            setMessages((prev) => {
+              if (
+                prev.some(
+                  (m) =>
+                    String(m._id || m.id) === String(message._id || message.id),
+                )
+              )
+                return prev;
+              return [...prev, message];
+            });
+          }
+        }
+        const senderName =
+          senderInfo.displayName || senderInfo.username || "Sender";
+        toast({
+          status: "success",
+          title: `Received ${entry.meta.name || "file"}`,
+          description: `from ${senderName}`,
+        });
+        try {
+          const downloadLink = document.createElement("a");
+          downloadLink.href = objectUrl;
+          downloadLink.download = entry.meta.name || `download-${Date.now()}`;
+          downloadLink.style.display = "none";
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          document.body.removeChild(downloadLink);
+        } catch (err) {
+          console.error("Auto download failed", err);
+        }
+        setTimeout(() => {
+          try {
+            URL.revokeObjectURL(objectUrl);
+          } catch (err) {
+            /* ignore */
+          }
+          objectUrlsRef.current = objectUrlsRef.current.filter(
+            (url) => url !== objectUrl,
+          );
+        }, 600_000);
+      }
+    });
+
     // WebRTC signalling
     s.on("incoming-call", ({ from, offer }) => {
       setIncomingCall({ from, offer });
@@ -364,9 +626,12 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
     });
 
     return () => {
+      if (socketRef.current === s) {
+        socketRef.current = null;
+      }
       s.disconnect();
     };
-  }, [token]);
+  }, [token, toast]);
 
   useEffect(() => {
     if (messagesRef.current)
@@ -393,13 +658,20 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
           new Date(a.createdAt || a.created_at || a.created) -
           new Date(b.createdAt || b.created_at || b.created),
       );
-      setMessages(filtered);
+      const destKey = String(dest);
+      const cached = conversationCache[destKey]?.messages || [];
+      const ephemeral = cached.filter((msg) => {
+        const id = String(msg?._id || msg?.id || "");
+        return id.startsWith("p2p_");
+      });
+      const combined = [...filtered, ...ephemeral];
+      setMessages(combined);
       setConversationCache((c) => ({
         ...c,
-        [dest]: {
-          messages: filtered,
+        [destKey]: {
+          messages: combined,
           lastFetched: Date.now(),
-          scrollY: c[dest]?.scrollY || 0,
+          scrollY: c[destKey]?.scrollY || 0,
         },
       }));
     } catch (err) {
@@ -410,8 +682,13 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
   async function sendMessage() {
     const dest = to;
     if (!dest || !text) return;
+    const activeSocket = socketRef.current;
+    if (!activeSocket) {
+      toast({ status: "error", title: "Socket not connected" });
+      return;
+    }
     const payload = { to: dest, content: text, meta: {} };
-    socket.emit("message", payload);
+    activeSocket.emit("message", payload);
     setText("");
   }
 
@@ -436,8 +713,253 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
     }
   }
 
+  function handleP2PFileSelect(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setP2pFiles((prev) => [...prev, ...files]);
+  }
+
+  function removeP2PFile(index) {
+    setP2pFiles((prev) => prev.filter((_, idx) => idx !== index));
+  }
+
+  async function streamFileOverSocket(file, destId, requestId, fileId) {
+    const activeSocket = socketRef.current;
+    if (!activeSocket) throw new Error("Socket not connected");
+    const totalChunks = Math.max(1, Math.ceil(file.size / P2P_CHUNK_SIZE));
+    for (let index = 0; index < totalChunks; index += 1) {
+      const start = index * P2P_CHUNK_SIZE;
+      const end = Math.min(start + P2P_CHUNK_SIZE, file.size);
+      const slice = file.slice(start, end);
+      const arrayBuffer = await slice.arrayBuffer();
+      const chunkBase64 = arrayBufferToBase64(arrayBuffer);
+      activeSocket.emit("p2p-file-chunk", {
+        to: destId,
+        requestId,
+        fileId,
+        index,
+        totalChunks,
+        chunk: chunkBase64,
+        meta: { name: file.name, size: file.size, type: file.type },
+      });
+      // Yield to event loop to keep UI responsive
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  function appendLocalP2PMessage(file, destId, requestId, fileId) {
+    const objectUrl = URL.createObjectURL(file);
+    objectUrlsRef.current.push(objectUrl);
+    const now = new Date().toISOString();
+    const message = {
+      _id: `${requestId}-${fileId}-local`,
+      from: {
+        id: user?.id || user?._id,
+        username: user?.username,
+        displayName: user?.displayName || user?.username,
+      },
+      to: destId,
+      file: {
+        url: objectUrl,
+        fileName: file.name,
+        mimeType: file.type,
+        size: file.size,
+      },
+      createdAt: now,
+    };
+    const destKey = String(destId);
+    setConversationCache((cache) => {
+      const existing = cache[destKey]?.messages || [];
+      if (
+        existing.some(
+          (m) => String(m._id || m.id) === String(message._id || message.id),
+        )
+      )
+        return cache;
+      return {
+        ...cache,
+        [destKey]: {
+          messages: [...existing, message],
+          lastFetched: Date.now(),
+          scrollY: cache[destKey]?.scrollY || 0,
+        },
+      };
+    });
+    const activeId = String(activeIdRef.current || "");
+    if (activeId === destKey) {
+      setMessages((prev) => {
+        if (
+          prev.some(
+            (m) => String(m._id || m.id) === String(message._id || message.id),
+          )
+        )
+          return prev;
+        return [...prev, message];
+      });
+    }
+    setTimeout(() => {
+      try {
+        URL.revokeObjectURL(objectUrl);
+      } catch (err) {
+        /* ignore */
+      }
+      objectUrlsRef.current = objectUrlsRef.current.filter((url) => url !== objectUrl);
+    }, 600_000);
+  }
+
+  async function processAcceptedP2P(requestId, destId) {
+    const pending = pendingP2PTransfersRef.current.get(requestId);
+    if (!pending) return;
+    const targetId = String(destId);
+    try {
+      const files = pending.files || [];
+      for (let i = 0; i < files.length; i += 1) {
+        const file = files[i];
+        // eslint-disable-next-line no-await-in-loop
+        await streamFileOverSocket(file, targetId, requestId, i);
+        appendLocalP2PMessage(file, targetId, requestId, i);
+      }
+      if (files.length) {
+        toast({
+          status: "success",
+          title: `Sent ${files.length} file${files.length === 1 ? "" : "s"} via P2P`,
+        });
+        setMessages((prev) => [
+          ...prev,
+          {
+            system: true,
+            text: `P2P transfer completed (${files.length} file${files.length === 1 ? "" : "s"}).`,
+          },
+        ]);
+      }
+    } catch (err) {
+      console.error("P2P upload failed", err);
+      toast({
+        status: "error",
+        title: "P2P transfer failed",
+        description: err?.response?.data?.message || err.message || "Transfer failed",
+      });
+      setMessages((prev) => [
+        ...prev,
+        { system: true, text: "P2P transfer failed." },
+      ]);
+    } finally {
+      pendingP2PTransfersRef.current.delete(requestId);
+      setP2pSending(false);
+    }
+  }
+
+  function resetP2PRequest(requestId) {
+    pendingP2PTransfersRef.current.delete(requestId);
+    setP2pSending(false);
+  }
+
+  function respondToIncomingP2P(accepted) {
+    const activeSocket = socketRef.current;
+    if (!incomingP2P || !activeSocket) return;
+    const rawId =
+      incomingP2P.from?.id || incomingP2P.from?._id || incomingP2P.from?.userId;
+    const targetId = rawId ? String(rawId) : null;
+    if (!targetId) {
+      setIncomingP2P(null);
+      return;
+    }
+    activeSocket.emit("p2p-response", {
+      to: targetId,
+      requestId: incomingP2P.requestId,
+      accepted,
+    });
+    const senderName =
+      incomingP2P.from?.displayName ||
+      incomingP2P.from?.username ||
+      "Sender";
+    if (accepted) {
+      toast({ status: "success", title: "P2P transfer accepted" });
+      setMessages((prev) => [
+        ...prev,
+        {
+          system: true,
+          text: `Accepted P2P transfer from ${senderName}.`,
+        },
+      ]);
+    } else {
+      toast({ status: "info", title: "P2P transfer declined" });
+      setMessages((prev) => [
+        ...prev,
+        {
+          system: true,
+          text: `Declined P2P transfer from ${senderName}.`,
+        },
+      ]);
+    }
+    setIncomingP2P(null);
+  }
+
+  const acceptP2PRequest = () => respondToIncomingP2P(true);
+  const declineP2PRequest = () => respondToIncomingP2P(false);
+
+  function sendP2PRequest() {
+    const activeSocket = socketRef.current;
+    if (!activeSocket || !to) {
+      toast({ status: "error", title: "No recipient selected" });
+      return;
+    }
+    if (!p2pFiles.length) {
+      toast({ status: "warning", title: "Select at least one file" });
+      return;
+    }
+    const targetId = String(to);
+    const requestId = `p2p_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const filesMeta = p2pFiles.map((file) => ({
+      name: file.name,
+      size: file.size,
+      type: file.type,
+    }));
+    const filesCopy = p2pFiles.slice();
+    pendingP2PTransfersRef.current.set(requestId, { to: targetId, files: filesCopy });
+    activeSocket.emit("p2p-request", { to: targetId, requestId, files: filesMeta });
+    setP2pSending(true);
+    setMessages((prev) => [
+      ...prev,
+      {
+        system: true,
+        text: `P2P transfer request sent (${filesMeta.length} file${filesMeta.length === 1 ? "" : "s"}).`,
+      },
+    ]);
+    toast({
+      status: "info",
+      title: "P2P request sent",
+      description: "Waiting for recipient to accept",
+    });
+    setP2pFiles([]);
+    closeP2PModal();
+  }
+
+  function handleOpenP2PModal() {
+    if (p2pSending) {
+      toast({ status: "info", title: "P2P transfer in progress" });
+      return;
+    }
+    if (!recipient?.id) {
+      toast({ status: "warning", title: "Select a user first" });
+      return;
+    }
+    if (recipient?.isGroup) {
+      toast({ status: "warning", title: "P2P transfer supports one-to-one chats" });
+      return;
+    }
+    setP2pFiles([]);
+    openP2PModal();
+  }
+
   async function startCall() {
     if (!to) return alert("Set recipient userId or roomId");
+    const activeSocket = socketRef.current;
+    if (!activeSocket) {
+      toast({ status: "error", title: "Socket not connected" });
+      return;
+    }
     try {
       const local = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -465,12 +987,12 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
 
       newPc.onicecandidate = (event) => {
         if (event.candidate)
-          socket.emit("ice-candidate", { to, candidate: event.candidate });
+          activeSocket.emit("ice-candidate", { to, candidate: event.candidate });
       };
 
       const offer = await newPc.createOffer();
       await newPc.setLocalDescription(offer);
-      socket.emit("call-user", { to, offer });
+      activeSocket.emit("call-user", { to, offer });
       setInCall(true);
     } catch (err) {
       console.error("Start call error", err);
@@ -480,6 +1002,11 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
   async function acceptCall() {
     if (!incomingCall) return;
     const { from, offer } = incomingCall;
+    const activeSocket = socketRef.current;
+    if (!activeSocket) {
+      toast({ status: "error", title: "Socket not connected" });
+      return;
+    }
     try {
       const local = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -506,7 +1033,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
 
       newPc.onicecandidate = (event) => {
         if (event.candidate)
-          socket.emit("ice-candidate", {
+          activeSocket.emit("ice-candidate", {
             to: from.id,
             candidate: event.candidate,
           });
@@ -515,7 +1042,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       await newPc.setRemoteDescription(offer);
       const answer = await newPc.createAnswer();
       await newPc.setLocalDescription(answer);
-      socket.emit("answer-call", { to: from.id, answer });
+      activeSocket.emit("answer-call", { to: from.id, answer });
       setInCall(true);
       setIncomingCall(null);
     } catch (err) {
@@ -545,44 +1072,12 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       setCallActive(false);
       setVideoPlaying({ local: false, remote: false });
       // Emit end-call to the other user's id (not the room/self id)
-      if (emit && socket && callPeerIdRef.current) {
-        socket.emit("end-call", { to: callPeerIdRef.current });
+      const activeSocket = socketRef.current;
+      if (emit && activeSocket && callPeerIdRef.current) {
+        activeSocket.emit("end-call", { to: callPeerIdRef.current });
       }
     } catch (err) {
       console.error(err);
-    }
-  }
-
-  async function toggleScreenShare() {
-    if (!pc) return;
-    try {
-      if (!isSharingScreen) {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-        });
-        const screenTrack = screenStream.getVideoTracks()[0];
-        const sender = pc
-          .getSenders()
-          .find((s) => s.track && s.track.kind === "video");
-        if (sender) sender.replaceTrack(screenTrack);
-        screenTrack.onended = async () => {
-          await toggleScreenShare();
-        };
-        setIsSharingScreen(true);
-      } else {
-        // stop screen sharing: try to get camera video and replace
-        const camStream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-        });
-        const camTrack = camStream.getVideoTracks()[0];
-        const sender = pc
-          .getSenders()
-          .find((s) => s.track && s.track.kind === "video");
-        if (sender) sender.replaceTrack(camTrack);
-        setIsSharingScreen(false);
-      }
-    } catch (err) {
-      console.error("Screen share error", err);
     }
   }
 
@@ -653,9 +1148,9 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
                     onClick={startCall}
                   />
                   <IconButton
-                    aria-label="Share screen"
-                    icon={<ViewIcon />}
-                    onClick={toggleScreenShare}
+                    aria-label="Peer to peer transfer"
+                    icon={<RepeatIcon />}
+                    onClick={handleOpenP2PModal}
                   />
                 </>
               )}
@@ -679,6 +1174,109 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
           endCall(true);
         }}
       />
+
+      <Modal
+        isOpen={isP2POpen}
+        onClose={() => {
+          if (p2pSending) return;
+          setP2pFiles([]);
+          closeP2PModal();
+        }}
+        isCentered
+        size="md"
+      >
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Peer to Peer Transfer</ModalHeader>
+          <ModalBody>
+            <Stack spacing={4}>
+              <Button
+                onClick={() => p2pFileInputRef.current && p2pFileInputRef.current.click()}
+                variant="outline"
+                disabled={p2pSending}
+              >
+                Select files
+              </Button>
+              <input
+                ref={p2pFileInputRef}
+                type="file"
+                multiple
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  handleP2PFileSelect(e);
+                  if (p2pFileInputRef.current) p2pFileInputRef.current.value = "";
+                }}
+              />
+              {p2pFiles.length === 0 ? (
+                <Text fontSize="sm" color="gray.500">
+                  No files selected yet.
+                </Text>
+              ) : (
+                <List spacing={2} maxH="200px" overflowY="auto">
+                  {p2pFiles.map((file, idx) => (
+                    <ListItem
+                      key={`${file.name}-${idx}`}
+                      display="flex"
+                      alignItems="center"
+                      justifyContent="space-between"
+                      borderWidth="1px"
+                      borderRadius="md"
+                      px={3}
+                      py={2}
+                    >
+                      <Box>
+                        <Text fontWeight="semibold" fontSize="sm">
+                          {file.name}
+                        </Text>
+                        <Text fontSize="xs" color="gray.500">
+                          {(file.size / 1024).toFixed(1)} KB • {file.type || "unknown"}
+                        </Text>
+                      </Box>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        colorScheme="red"
+                        onClick={() => removeP2PFile(idx)}
+                        disabled={p2pSending}
+                      >
+                        Remove
+                      </Button>
+                    </ListItem>
+                  ))}
+                </List>
+              )}
+            </Stack>
+          </ModalBody>
+          <ModalFooter>
+            <Button
+              variant="ghost"
+              mr={3}
+              onClick={() => {
+                if (p2pSending) return;
+                setP2pFiles([]);
+                closeP2PModal();
+              }}
+              disabled={p2pSending}
+            >
+              Cancel
+            </Button>
+            <Button
+              colorScheme="blue"
+              onClick={sendP2PRequest}
+              isDisabled={p2pFiles.length === 0 || p2pSending}
+            >
+              {p2pSending ? (
+                <HStack spacing={2}>
+                  <Spinner size="sm" />
+                  <Text>Sending…</Text>
+                </HStack>
+              ) : (
+                "Send Request"
+              )}
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
 
       <div style={{ display: "flex", gap: 12 }}>
         <div style={{ flex: 1 }}>
@@ -840,6 +1438,83 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
           </Box>
         </div>
       </div>
+
+      <Modal
+        isOpen={!!incomingP2P}
+        onClose={declineP2PRequest}
+        isCentered
+        size="sm"
+        closeOnOverlayClick={false}
+      >
+        <ModalOverlay backdropFilter="blur(2px)" />
+        <ModalContent>
+          <ModalHeader px={4} py={3}>Incoming P2P Transfer</ModalHeader>
+          <ModalBody pt={0} pb={3}>
+            {incomingP2P && (
+              <Stack spacing={3}>
+                <HStack spacing={3} align="center">
+                  <SecureAvatar
+                    token={token}
+                    size="md"
+                    src={incomingP2P.from?.avatar}
+                    initialUrl={incomingP2P.from?.avatarSignedUrl}
+                    initialExpiresAt={incomingP2P.from?.avatarSignedExpiresAt}
+                    name={
+                      incomingP2P.from?.displayName ||
+                      incomingP2P.from?.username
+                    }
+                  />
+                  <Box>
+                    <Text fontWeight="semibold" fontSize="sm">
+                      {incomingP2P.from?.displayName ||
+                        incomingP2P.from?.username}
+                    </Text>
+                    <Text fontSize="xs" color="gray.500">
+                      wants to send {incomingP2P.files?.length || 0} file
+                      {incomingP2P.files && incomingP2P.files.length === 1 ? "" : "s"}
+                    </Text>
+                  </Box>
+                </HStack>
+                <List spacing={2} maxH="200px" overflowY="auto">
+                  {(incomingP2P.files || []).map((file, idx) => (
+                    <ListItem
+                      key={`${incomingP2P.requestId}-${file.name}-${idx}`}
+                      borderWidth="1px"
+                      borderRadius="md"
+                      px={3}
+                      py={2}
+                    >
+                      <HStack justify="space-between">
+                        <Text fontSize="sm" fontWeight="medium">
+                          {file.name}
+                        </Text>
+                        <Badge colorScheme="blue">
+                          {(Number(file.size || 0) / 1024).toFixed(1)} KB
+                        </Badge>
+                      </HStack>
+                      <Text fontSize="xs" color="gray.500">
+                        {file.type || "unknown"}
+                      </Text>
+                    </ListItem>
+                  ))}
+                </List>
+              </Stack>
+            )}
+          </ModalBody>
+          <ModalFooter display="flex" justifyContent="space-between">
+            <Button
+              onClick={declineP2PRequest}
+              variant="outline"
+              colorScheme="red"
+            >
+              Decline
+            </Button>
+            <Button onClick={acceptP2PRequest} colorScheme="green">
+              Accept & Download
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
 
       <Modal
         isOpen={!!incomingCall}

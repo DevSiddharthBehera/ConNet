@@ -139,6 +139,116 @@ function initSocket(io) {
       }
     });
 
+    socket.on("p2p-request", ({ to, requestId, files }) => {
+      if (!to || !requestId || !Array.isArray(files) || files.length === 0)
+        return;
+      const sanitizedFiles = files
+        .filter((f) => f && f.name)
+        .map((f) => ({
+          name: f.name,
+          size: Number(f.size) || 0,
+          type: f.type || "",
+        }));
+      if (!sanitizedFiles.length) return;
+
+      const payload = {
+        requestId,
+        from: {
+          id: user.id,
+          username: user.username,
+          displayName: user.displayName,
+          avatar: user.avatar,
+        },
+        files: sanitizedFiles,
+      };
+
+      const targetSet = onlineUsers.get(String(to));
+      if (targetSet && targetSet.size) {
+        targetSet.forEach((sid) => io.to(sid).emit("p2p-request", payload));
+      } else {
+        // If recipient offline, notify requester immediately that transfer is not possible
+        io.to(socket.id).emit("p2p-response", {
+          requestId,
+          from: { id: String(to) },
+          accepted: false,
+          reason: "offline",
+        });
+      }
+
+      // sync other sessions of the requester
+      const requesterSet = onlineUsers.get(user.id);
+      if (requesterSet) {
+        requesterSet.forEach((sid) => {
+          if (sid !== socket.id) {
+            io.to(sid).emit("p2p-request-sent", payload);
+          }
+        });
+      }
+    });
+
+    socket.on("p2p-response", ({ to, requestId, accepted }) => {
+      if (!to || !requestId) return;
+      const payload = {
+        requestId,
+        from: {
+          id: user.id,
+          username: user.username,
+          displayName: user.displayName,
+          avatar: user.avatar,
+        },
+        accepted: Boolean(accepted),
+        to: String(to),
+      };
+      const targetSet = onlineUsers.get(String(to));
+      if (targetSet) {
+        targetSet.forEach((sid) => io.to(sid).emit("p2p-response", payload));
+      }
+
+      // keep responder's other sessions in sync
+      const responderSet = onlineUsers.get(user.id);
+      if (responderSet) {
+        responderSet.forEach((sid) => {
+          io.to(sid).emit("p2p-response-local", payload);
+        });
+      }
+    });
+
+    socket.on("p2p-file-chunk", ({
+      to,
+      requestId,
+      fileId,
+      index,
+      totalChunks,
+      chunk,
+      meta,
+    }) => {
+      if (!to || !requestId || typeof fileId === "undefined") return;
+      if (typeof index !== "number" || typeof totalChunks !== "number") return;
+      if (!chunk) return;
+      const payload = {
+        requestId,
+        fileId,
+        index,
+        totalChunks,
+        chunk,
+        meta: {
+          name: meta?.name || "file",
+          size: Number(meta?.size) || 0,
+          type: meta?.type || "",
+        },
+        from: {
+          id: user.id,
+          username: user.username,
+          displayName: user.displayName,
+          avatar: user.avatar,
+        },
+      };
+      const targetSet = onlineUsers.get(String(to));
+      if (targetSet) {
+        targetSet.forEach((sid) => io.to(sid).emit("p2p-file-chunk", payload));
+      }
+    });
+
     // WebRTC signalling for calls: call-user, call-made, answer-call, ice-candidate, end-call
     socket.on("call-user", ({ to, offer }) => {
       const targetSet = onlineUsers.get(to);

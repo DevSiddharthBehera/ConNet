@@ -206,6 +206,75 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
       }
     });
 
+    s.on("p2p-request", (payload) => {
+      try {
+        const fromId = String(
+          payload?.from?.id || payload?.from?._id || payload?.from,
+        );
+        if (!fromId) return;
+        const ts = Date.now();
+        const count = payload?.files?.length || 0;
+        setLastMessageTime((prev) => ({ ...prev, [fromId]: ts }));
+        setLastMessageContent((prev) => ({
+          ...prev,
+          [fromId]: `P2P request (${count} file${count === 1 ? "" : "s"})`,
+        }));
+        const activeId = selectedRef.current?.id
+          ? String(selectedRef.current.id)
+          : null;
+        if (!activeId || activeId !== fromId) {
+          setUnreadCounts((prev) => ({
+            ...prev,
+            [fromId]: (prev[fromId] || 0) + 1,
+          }));
+        }
+      } catch (err) {
+        console.error("Sidebar p2p-request error", err);
+      }
+    });
+
+    s.on("p2p-response", (payload) => {
+      try {
+        const partnerId = String(
+          payload?.from?.id || payload?.from?._id || payload?.from,
+        );
+        if (!partnerId) return;
+        const ts = Date.now();
+        const summary = payload?.accepted
+          ? "P2P accepted"
+          : payload?.reason === "offline"
+            ? "P2P failed (offline)"
+            : "P2P declined";
+        setLastMessageTime((prev) => ({ ...prev, [partnerId]: ts }));
+        setLastMessageContent((prev) => ({ ...prev, [partnerId]: summary }));
+        const activeId = selectedRef.current?.id
+          ? String(selectedRef.current.id)
+          : null;
+        if (!activeId || activeId !== partnerId) {
+          setUnreadCounts((prev) => ({
+            ...prev,
+            [partnerId]: (prev[partnerId] || 0) + 1,
+          }));
+        }
+      } catch (err) {
+        console.error("Sidebar p2p-response error", err);
+      }
+    });
+
+    s.on("p2p-response-local", (payload) => {
+      try {
+        const targetIdRaw = payload?.to;
+        if (!targetIdRaw) return;
+        const partnerId = String(targetIdRaw);
+        const ts = Date.now();
+        const summary = payload?.accepted ? "P2P accepted" : "P2P declined";
+        setLastMessageTime((prev) => ({ ...prev, [partnerId]: ts }));
+        setLastMessageContent((prev) => ({ ...prev, [partnerId]: summary }));
+      } catch (err) {
+        console.error("Sidebar p2p-response-local error", err);
+      }
+    });
+
     s.on("user-updated", (payload) => {
       try {
         const updatedId = String(payload?.id || payload?._id || "");
