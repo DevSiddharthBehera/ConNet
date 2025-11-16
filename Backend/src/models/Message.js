@@ -10,6 +10,8 @@ const MessageSchema = new Schema({
     fileName: String,
     mimeType: String,
     size: Number,
+    storageBucket: String,
+    storagePath: String,
   },
   meta: { type: Schema.Types.Mixed },
   createdAt: { type: Date, default: Date.now },

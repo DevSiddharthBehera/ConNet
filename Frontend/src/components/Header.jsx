@@ -3,7 +3,6 @@ import {
   Flex,
   Box,
   Heading,
-  Avatar,
   Menu,
   MenuButton,
   MenuList,
@@ -12,25 +11,9 @@ import {
   HStack,
   Text,
 } from "@chakra-ui/react";
-import API from "../api";
+import SecureAvatar from "./SecureAvatar";
 
-// Helper to resolve avatar URLs to absolute URLs
-function resolveAvatarUrl(avatar) {
-  if (!avatar) return undefined;
-  if (avatar.startsWith("http://") || avatar.startsWith("https://")) {
-    return avatar; // Already absolute
-  }
-  // Convert relative path to absolute backend URL
-  try {
-    const backendOrigin = API.defaults.baseURL.replace(/\/api\/?$/, "");
-    return `${backendOrigin}${avatar}`;
-  } catch (e) {
-    console.warn("Failed to resolve avatar URL:", avatar, e);
-    return avatar;
-  }
-}
-
-export default function Header({ user, onSignOut }) {
+export default function Header({ user, onSignOut, token }) {
   return (
     <Flex
       as="header"
@@ -53,7 +36,16 @@ export default function Header({ user, onSignOut }) {
         <Menu>
           <MenuButton
             as={IconButton}
-            icon={<Avatar src={resolveAvatarUrl(user?.avatar)} name={user?.displayName || user?.username} size="sm" />}
+            icon={(
+              <SecureAvatar
+                token={token}
+                src={user?.avatar}
+                initialUrl={user?.avatarSignedUrl}
+                initialExpiresAt={user?.avatarSignedExpiresAt}
+                name={user?.displayName || user?.username}
+                size="sm"
+              />
+            )}
             variant="ghost"
           />
           <MenuList>
