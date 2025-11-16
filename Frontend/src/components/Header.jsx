@@ -12,6 +12,23 @@ import {
   HStack,
   Text,
 } from "@chakra-ui/react";
+import API from "../api";
+
+// Helper to resolve avatar URLs to absolute URLs
+function resolveAvatarUrl(avatar) {
+  if (!avatar) return undefined;
+  if (avatar.startsWith("http://") || avatar.startsWith("https://")) {
+    return avatar; // Already absolute
+  }
+  // Convert relative path to absolute backend URL
+  try {
+    const backendOrigin = API.defaults.baseURL.replace(/\/api\/?$/, "");
+    return `${backendOrigin}${avatar}`;
+  } catch (e) {
+    console.warn("Failed to resolve avatar URL:", avatar, e);
+    return avatar;
+  }
+}
 
 export default function Header({ user, onSignOut }) {
   return (
@@ -36,15 +53,11 @@ export default function Header({ user, onSignOut }) {
         <Menu>
           <MenuButton
             as={IconButton}
-            icon={<Avatar name={user.displayName || user.username} size="sm" />}
+            icon={<Avatar src={resolveAvatarUrl(user?.avatar)} name={user?.displayName || user?.username} size="sm" />}
             variant="ghost"
           />
           <MenuList>
-            <MenuItem
-              onClick={() => window.alert("Edit profile - not implemented")}
-            >
-              Edit Profile
-            </MenuItem>
+            <MenuItem onClick={() => window.alert("Edit profile - open sidebar profile modal")}>Edit Profile</MenuItem>
             <MenuItem onClick={onSignOut}>Logout</MenuItem>
           </MenuList>
         </Menu>

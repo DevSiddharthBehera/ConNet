@@ -88,10 +88,8 @@ router.post("/login", async (req, res) => {
   }
 });
 
-module.exports = router;
-
-// OAuth routes: Google and Facebook (simple demo flow)
-// Requirements: set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, FACEBOOK_APP_ID, FACEBOOK_APP_SECRET, FRONTEND_URL in .env
+// OAuth routes: Google (simple demo flow)
+// Requirements: set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, FRONTEND_URL in .env
 
 async function findOrCreateOAuthUser({ provider, id, name, email }) {
   // create a username from provider+id if no email
@@ -114,13 +112,16 @@ async function findOrCreateOAuthUser({ provider, id, name, email }) {
 // redirect to provider
 router.get("/google", (req, res) => {
   const popup = req.query.popup;
-  const redirectUri = `${process.env.BACKEND_URL || ""}/api/auth/google/callback`;
+  const backendUrl = process.env.BACKEND_URL || "http://localhost:4000";
+  // Don't include query params in redirect_uri - use state parameter instead
+  const redirectUri = `${backendUrl}/api/auth/google/callback`;
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID || "",
     redirect_uri: redirectUri,
     response_type: "code",
     scope: "openid profile email",
     prompt: "select_account",
+    state: popup ? 'popup' : 'redirect', // Pass popup state to callback
   });
   const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
   if (popup) return res.redirect(url);
@@ -130,7 +131,11 @@ router.get("/google", (req, res) => {
 router.get("/google/callback", async (req, res) => {
   try {
     const code = req.query.code;
-    const redirectUri = `${process.env.BACKEND_URL || ""}/api/auth/google/callback`;
+    const state = req.query.state;
+    const popup = state === 'popup';
+    const backendUrl = process.env.BACKEND_URL || "http://localhost:4000";
+    // Must match exactly what's registered in Google Console
+    const redirectUri = `${backendUrl}/api/auth/google/callback`;
     const tokenResp = await axios.post(
       "https://oauth2.googleapis.com/token",
       new URLSearchParams({
@@ -143,7 +148,6 @@ router.get("/google/callback", async (req, res) => {
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
     );
 
-    const id_token = tokenResp.data.id_token;
     const userInfoResp = await axios.get(
       `https://www.googleapis.com/oauth2/v2/userinfo?access_token=${tokenResp.data.access_token}`,
       { headers: { Authorization: `Bearer ${tokenResp.data.access_token}` } },
@@ -166,16 +170,39 @@ router.get("/google/callback", async (req, res) => {
       { expiresIn: "7d" },
     );
 
+    const userPayload = {
+      id: user._id.toString(),
+      username: user.username,
+      displayName: user.displayName,
+    };
+
     // If opened as popup, postMessage back to opener and close
-    if (req.query.popup) {
-      const frontend = process.env.FRONTEND_URL || "http://localhost:5174";
+    if (popup) {
+      const frontend = process.env.FRONTEND_URL || "http://localhost:5173";
       return res.send(
-        `<!doctype html><html><body><script>window.opener.postMessage(${JSON.stringify({ token, user: { id: user._id.toString(), username: user.username, displayName: user.displayName } })}, '${frontend}');window.close();</script></body></html>`,
+        `<!doctype html><html><body><script>
+        (function() {
+          try {
+            if (!window.opener) {
+              document.body.innerHTML = '<h3>Error: Popup opened incorrectly. Please try again.</h3>';
+              return;
+            }
+            var data = ${JSON.stringify({ token, user: userPayload })};
+            console.log('Posting message to opener:', data);
+            window.opener.postMessage(data, '${frontend}');
+            document.body.innerHTML = '<h3>Success! Closing window...</h3>';
+            setTimeout(function() { window.close(); }, 500);
+          } catch(e) {
+            console.error('postMessage error:', e);
+            document.body.innerHTML = '<h3>Success! You can close this window.</h3>';
+          }
+        })();
+        </script></body></html>`,
       );
     }
 
     // otherwise redirect to frontend with token
-    const frontend = process.env.FRONTEND_URL || "http://localhost:5174";
+    const frontend = process.env.FRONTEND_URL || "http://localhost:5173";
     res.redirect(`${frontend}/?token=${token}`);
   } catch (err) {
     console.error(
@@ -186,4 +213,5 @@ router.get("/google/callback", async (req, res) => {
   }
 });
 
-// Facebook OAuth removed per user request
+module.exports = router;
+

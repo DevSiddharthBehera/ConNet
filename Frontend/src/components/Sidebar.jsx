@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
   Box,
   VStack,
@@ -22,12 +22,120 @@ import {
   Checkbox,
   Stack,
   useDisclosure,
+  useToast,
 } from "@chakra-ui/react";
-import { AddIcon } from "@chakra-ui/icons";
+import { AddIcon, EditIcon } from "@chakra-ui/icons";
 import { io } from "socket.io-client";
 import API from "../api";
+import Cropper from "react-easy-crop";
+
+// Helper to resolve avatar URLs to absolute URLs
+function resolveAvatarUrl(avatar) {
+  if (!avatar) return undefined;
+  if (avatar.startsWith("http://") || avatar.startsWith("https://")) {
+    return avatar; // Already absolute
+  }
+  // Convert relative path to absolute backend URL
+  try {
+    const backendOrigin = API.defaults.baseURL.replace(/\/api\/?$/, "");
+    return `${backendOrigin}${avatar}`;
+  } catch (e) {
+    console.warn("Failed to resolve avatar URL:", avatar, e);
+    return avatar;
+  }
+}
+
+// Resize an image File to fixed width/height (center-cover) and return a new File
+async function resizeImageFile(file, width, height) {
+  if (!file) return file;
+  // Use createImageBitmap for better performance when available
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch (e) {
+    // Fallback to Image element
+    const dataUrl = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = reject;
+      fr.readAsDataURL(file);
+    });
+    bitmap = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return file;
+
+  // cover (center-crop)
+  const iw = bitmap.width || bitmap.naturalWidth || 0;
+  const ih = bitmap.height || bitmap.naturalHeight || 0;
+  if (!iw || !ih) return file;
+  const scale = Math.max(width / iw, height / ih);
+  const sw = iw * scale;
+  const sh = ih * scale;
+  const dx = (width - sw) / 2;
+  const dy = (height - sh) / 2;
+
+  // fill white background for non-transparent images
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(bitmap, dx, dy, sw, sh);
+
+  const blob = await new Promise((resolve) =>
+    canvas.toBlob(resolve, file.type || "image/jpeg", 0.9),
+  );
+  if (!blob) return file;
+  const newFile = new File([blob], file.name, { type: blob.type });
+  return newFile;
+}
+
+// Produce a cropped Blob from an image source and crop rectangle (pixels)
+async function getCroppedImg(imageSrc, cropPixels, outputSize = 256, mime = 'image/jpeg') {
+  if (!imageSrc || !cropPixels) return null;
+  const image = await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.setAttribute('crossOrigin', 'anonymous');
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = imageSrc;
+  });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = outputSize;
+  canvas.height = outputSize;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0, 0, outputSize, outputSize);
+
+  ctx.drawImage(
+    image,
+    cropPixels.x,
+    cropPixels.y,
+    cropPixels.width,
+    cropPixels.height,
+    0,
+    0,
+    outputSize,
+    outputSize,
+  );
+
+  const blob = await new Promise((res) => canvas.toBlob(res, mime, 0.9));
+  return blob;
+}
 
 export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
+  // onUserChange is optional callback passed from App to update logged-in user
+  // signature: onUserChange(updatedUser)
+  const onUserChange = arguments[0].onUserChange;
   const [users, setUsers] = useState([]);
   const [rooms, setRooms] = useState([]);
   const [query, setQuery] = useState("");
@@ -43,6 +151,31 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
     onOpen: openCreate,
     onClose: closeCreate,
   } = useDisclosure();
+  const {
+    isOpen: isProfileOpen,
+    onOpen: openProfile,
+    onClose: closeProfile,
+  } = useDisclosure();
+  const [profileDisplayName, setProfileDisplayName] = useState(
+    user?.displayName || "",
+  );
+  const [profileAbout, setProfileAbout] = useState(user?.about || "");
+  const toast = useToast();
+  const avatarInputRef = React.useRef();
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [cropImageSrc, setCropImageSrc] = useState(null);
+  const cropImgRef = useRef(null);
+  const cropCanvasRef = useRef(null);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
+  // pan-based crop: position of image inside the fixed viewport
+  const [imgPos, setImgPos] = useState({ x: 0, y: 0 });
+  const imgNaturalRef = useRef({ w: 0, h: 0 });
+  const imgDisplayRef = useRef({ w: 0, h: 0, scale: 1 });
+  const isPanningRef = useRef(false);
+  const panStartRef = useRef({ x: 0, y: 0 });
   const [groupName, setGroupName] = useState("");
   const [groupMembers, setGroupMembers] = useState([]);
 
@@ -86,6 +219,21 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
         setOnlineIds((prev) => prev.filter((id) => String(id) !== idToRemove));
       } catch (err) {
         /* ignore */
+      }
+    });
+
+    s.on("user-updated", (payload) => {
+      try {
+        const updatedId = String(payload?.id || payload?._id || "");
+        if (!updatedId) return;
+        setUsers((prev) =>
+          (prev || []).map((u) => {
+            const userId = String(u.id || u._id || "");
+            return userId === updatedId ? { ...u, avatar: payload.avatar } : u;
+          }),
+        );
+      } catch (err) {
+        console.error("user-updated handler error:", err);
       }
     });
 
@@ -215,6 +363,8 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
             id: first.id,
             displayName: first.displayName,
             isGroup: first.type === "room",
+            avatar: first.avatar,
+            username: first.username || first.name,
           });
         }
       }
@@ -222,6 +372,125 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
       console.error("Fetch lists error", err);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleAvatarUpload(file) {
+    if (!file) return;
+    if (!token) return toast({ status: "error", title: "Not authenticated" });
+    try {
+      // open crop modal first: convert file to dataURL and let user crop
+      const dataUrl = await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = reject;
+        fr.readAsDataURL(file);
+      });
+      setCropImageSrc(dataUrl);
+      // store file temporarily on ref for later use
+      cropImgRef.current = { originalFile: file };
+      setCropModalOpen(true);
+      // return here; actual upload will happen after user confirms crop
+      return;
+    } catch (err) {
+      console.error("Avatar select failed", err);
+      toast({ status: "error", title: "Failed to prepare image" });
+      return;
+    }
+  }
+
+  // Called when user confirms crop in modal. Uses react-easy-crop's cropped pixels.
+  async function confirmCropAndUpload() {
+    const fileEntry = cropImgRef.current && cropImgRef.current.originalFile;
+    if (!fileEntry || !cropImageSrc) {
+      setCropModalOpen(false);
+      return;
+    }
+    try {
+      setUploadingAvatar(true);
+      const OUTPUT_SIZE = 256;
+
+      let blob;
+      if (croppedAreaPixels) {
+        blob = await getCroppedImg(cropImageSrc, croppedAreaPixels, OUTPUT_SIZE, fileEntry.type || 'image/jpeg');
+      }
+
+      if (!blob) {
+        // fallback: just resize original file
+        const resized = await resizeImageFile(fileEntry, OUTPUT_SIZE, OUTPUT_SIZE);
+        const fd2 = new FormData();
+        fd2.append('file', resized, resized.name || fileEntry.name);
+        fd2.append('purpose', 'avatar');
+        const resp2 = await API.post('/files/upload', fd2, {
+          headers: { 'Content-Type': 'multipart/form-data', Authorization: `Bearer ${token}` },
+        });
+        const url2 = resp2.data?.url;
+        const updatedUser2 = resp2.data?.user || { ...user, avatar: url2 };
+        setUsers((prev) => (prev || []).map((u) => {
+          const userId = String(u.id || u._id || '');
+          const updatedId = String(updatedUser2._id || updatedUser2.id || '');
+          return userId === updatedId ? { ...u, avatar: url2 } : u;
+        }));
+        if (typeof onUserChange === 'function') onUserChange(updatedUser2);
+        try { localStorage.setItem('user', JSON.stringify(updatedUser2)); } catch (e) {}
+        toast({ status: 'success', title: 'Avatar updated' });
+        return;
+      }
+
+      const outFile = new File([blob], fileEntry.name, { type: blob.type || 'image/jpeg' });
+      const resizedFinal = await resizeImageFile(outFile, OUTPUT_SIZE, OUTPUT_SIZE);
+      const fd = new FormData();
+      fd.append('file', resizedFinal, resizedFinal.name || outFile.name);
+      fd.append('purpose', 'avatar');
+      const resp = await API.post('/files/upload', fd, {
+        headers: { 'Content-Type': 'multipart/form-data', Authorization: `Bearer ${token}` },
+      });
+      const url = resp.data?.url;
+      const updatedUser = resp.data?.user || { ...user, avatar: url };
+      setUsers((prev) => (prev || []).map((u) => {
+        const userId = String(u.id || u._id || '');
+        const updatedId = String(updatedUser._id || updatedUser.id || '');
+        return userId === updatedId ? { ...u, avatar: url } : u;
+      }));
+      if (typeof onUserChange === 'function') onUserChange(updatedUser);
+      try { localStorage.setItem('user', JSON.stringify(updatedUser)); } catch (e) {}
+      toast({ status: 'success', title: 'Avatar updated' });
+    } catch (err) {
+      console.error('Avatar upload failed', err);
+      toast({ status: 'error', title: 'Upload failed' });
+    } finally {
+      setUploadingAvatar(false);
+      setCropModalOpen(false);
+    }
+  }
+
+  async function handleProfileSave() {
+    if (!token) return toast({ status: "error", title: "Not authenticated" });
+    try {
+      const resp = await API.patch(
+        "/users/me",
+        { displayName: profileDisplayName, about: profileAbout },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const updated = resp.data;
+      setUsers((prev) =>
+        (prev || []).map((u) =>
+          String(u.id) === String(updated.id)
+            ? { ...u, displayName: updated.displayName, about: updated.about, avatar: updated.avatar }
+            : u,
+        ),
+      );
+      if (typeof onUserChange === "function") onUserChange(updated);
+      try {
+        localStorage.setItem("user", JSON.stringify(updated));
+      } catch (err) {
+        /* ignore */
+      }
+      toast({ status: "success", title: "Profile updated" });
+      closeProfile();
+    } catch (err) {
+      console.error("Profile save failed", err);
+      toast({ status: "error", title: "Save failed" });
     }
   }
 
@@ -307,13 +576,39 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
       <Box bg="white" p={4} borderRadius="md" boxShadow="sm">
         <VStack align="stretch" spacing={4}>
           <HStack spacing={3} align="center">
-            <Avatar name={user.displayName || user.username} />
+            <Box position="relative">
+              <Avatar src={resolveAvatarUrl(user?.avatar)} name={user?.displayName || user?.username} />
+              <IconButton
+                size="xs"
+                aria-label="Change avatar"
+                icon={<EditIcon />}
+                position="absolute"
+                bottom={-1}
+                right={-1}
+                borderRadius="full"
+                onClick={() => {
+                  setProfileDisplayName(user?.displayName || "");
+                  setProfileAbout(user?.about || "");
+                  openProfile();
+                }}
+              />
+            </Box>
             <Box>
               <Text fontWeight="bold">{user.displayName || user.username}</Text>
               <Text fontSize="sm" color="gray.500">
                 {user.username}
               </Text>
             </Box>
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files && e.target.files[0];
+                if (f) handleAvatarUpload(f);
+              }}
+            />
           </HStack>
 
           <Input
@@ -361,6 +656,8 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
                           id: c.id,
                           displayName: c.displayName,
                           isGroup: c.type === "room",
+                          avatar: c.avatar,
+                          username: c.username || c.name,
                         });
                         // Mark as read
                         if (!isSelf && socket && unreadCount > 0) {
@@ -371,7 +668,7 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
                     >
                       <HStack spacing={2} align="start">
                         <Box position="relative">
-                          <Avatar size="sm" name={c.displayName} />
+                          <Avatar size="sm" src={resolveAvatarUrl(c.avatar)} name={c.displayName} />
                           {isOnline && !isSelf && (
                             <Box
                               position="absolute"
@@ -504,6 +801,113 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
               }}
             >
               Create
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+      {/* Crop modal for avatar selection */}
+      <Modal isOpen={cropModalOpen} onClose={() => setCropModalOpen(false)} size="lg">
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Crop avatar</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <Box>
+              {cropImageSrc ? (
+                <Box>
+                  {/* fixed square viewport where user pans image to choose center */}
+                  <Box style={{ width: 256, height: 256, position: 'relative', background: '#f7fafc' }}>
+                    <Cropper
+                      image={cropImageSrc}
+                      crop={crop}
+                      zoom={zoom}
+                      aspect={1}
+                      onCropChange={setCrop}
+                      onZoomChange={setZoom}
+                      onCropComplete={(area, areaPixels) => setCroppedAreaPixels(areaPixels)}
+                      showGrid={false}
+                      cropShape="rect"
+                    />
+                  </Box>
+                  <Box mt={3} display="flex" alignItems="center" gap={3}>
+                    <Text fontSize="sm">Zoom</Text>
+                    <input
+                      type="range"
+                      min={1}
+                      max={3}
+                      step={0.01}
+                      value={zoom}
+                      onChange={(e) => setZoom(Number(e.target.value))}
+                      style={{ flex: 1 }}
+                    />
+                  </Box>
+                  <canvas ref={cropCanvasRef} style={{ display: 'none' }} />
+                </Box>
+              ) : (
+                <Text>No image selected</Text>
+              )}
+            </Box>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr={3} onClick={() => setCropModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button colorScheme="blue" onClick={confirmCropAndUpload} isLoading={uploadingAvatar}>
+              Upload
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+      <Modal isOpen={isProfileOpen} onClose={closeProfile} size="md">
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Edit Profile</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <Box display="flex" alignItems="center" flexDirection="column" mb={4}>
+              <Box position="relative">
+                <Avatar size="xl" src={resolveAvatarUrl(user?.avatar)} name={user?.displayName || user?.username} />
+                <IconButton
+                  aria-label="Change avatar"
+                  icon={<EditIcon />}
+                  size="sm"
+                  position="absolute"
+                  bottom={0}
+                  right={0}
+                  onClick={() => avatarInputRef.current && avatarInputRef.current.click()}
+                />
+              </Box>
+              <Text fontSize="sm" color="gray.500" mt={2} textAlign="center">
+                {user?.username}
+              </Text>
+            </Box>
+
+            <FormControl mb={3}>
+              <FormLabel>Display name</FormLabel>
+              <Input value={profileDisplayName} onChange={(e) => setProfileDisplayName(e.target.value)} />
+            </FormControl>
+
+            <FormControl>
+              <FormLabel>About</FormLabel>
+              <Input value={profileAbout} onChange={(e) => setProfileAbout(e.target.value)} />
+            </FormControl>
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files && e.target.files[0];
+                if (f) handleAvatarUpload(f);
+              }}
+            />
+          </ModalBody>
+          <ModalFooter>
+            <Button mr={3} variant="ghost" onClick={closeProfile}>
+              Cancel
+            </Button>
+            <Button colorScheme="blue" onClick={handleProfileSave} isLoading={uploadingAvatar}>
+              Save
             </Button>
           </ModalFooter>
         </ModalContent>

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
-import API from "../api";
+import ApiClient from "../api";
 import {
   Button,
   Box,
@@ -20,6 +20,10 @@ import {
   Flex,
   InputGroup,
   InputRightElement,
+  Menu,
+  MenuButton,
+  MenuList,
+  MenuItem,
 } from "@chakra-ui/react";
 import {
   ArrowForwardIcon,
@@ -29,7 +33,31 @@ import {
 import { PhoneIcon, ViewIcon } from "@chakra-ui/icons";
 import VideoModal from "./VideoModal";
 
+// Helper to resolve avatar URLs to absolute URLs
+function resolveAvatarUrl(avatar) {
+  if (!avatar) return undefined;
+  if (avatar.startsWith("http://") || avatar.startsWith("https://")) {
+    return avatar; // Already absolute
+  }
+  // Convert relative path to absolute backend URL
+  try {
+    const backendOrigin = ApiClient.defaults.baseURL.replace(/\/api\/?$/, "");
+    return `${backendOrigin}${avatar}`;
+  } catch (e) {
+    console.warn("Failed to resolve avatar URL:", avatar, e);
+    return avatar;
+  }
+}
+
 export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
+  useEffect(() => {
+    try {
+      console.log("Chat recipient:", recipient);
+      console.log("Chat avatar resolved:", resolveAvatarUrl(recipient?.avatar));
+    } catch (e) {
+      /* ignore */
+    }
+  }, [recipient]);
   const [socket, setSocket] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
@@ -56,6 +84,10 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
   const activeIdRef = useRef("");
   const isGroupRef = useRef(false);
   const fileInputRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const docInputRef = useRef(null);
+  const videoInputRef = useRef(null);
+  const zipInputRef = useRef(null);
   const [selectedFileName, setSelectedFileName] = useState("");
 
   // Handle conversation changes: always reload from server on click
@@ -75,7 +107,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
 
   async function fetchRoomInfo(roomId) {
     try {
-      const resp = await API.get(`/rooms/${roomId}`, {
+      const resp = await ApiClient.get(`/rooms/${roomId}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setRoomInfo(resp.data);
@@ -305,7 +337,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
     const dest = target || to;
     if (!dest) return;
     try {
-      const resp = await API.get(`/messages/${dest}?limit=500`, {
+      const resp = await ApiClient.get(`/messages/${dest}?limit=500`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const all = resp.data || [];
@@ -350,7 +382,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("to", to);
-      const resp = await API.post("/files/upload", fd, {
+      const resp = await ApiClient.post("/files/upload", fd, {
         headers: {
           "Content-Type": "multipart/form-data",
           Authorization: `Bearer ${token}`,
@@ -520,9 +552,10 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
         <HStack justify="space-between">
           <Box>
             <HStack spacing={3} align="center">
-              <Box position="relative">
+                <Box position="relative">
                 <Avatar
                   size="md"
+                  src={resolveAvatarUrl(recipient?.avatar)}
                   name={recipient?.displayName || recipient?.username}
                 />
                 {recipient?.id &&
@@ -682,14 +715,20 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
                 </InputRightElement>
               </InputGroup>
 
-              <IconButton
-                aria-label="Attach file"
-                icon={<AttachmentIcon />}
-                variant="outline"
-                onClick={() =>
-                  fileInputRef.current && fileInputRef.current.click()
-                }
-              />
+              <Menu placement={isMobile ? "top" : "bottom"}>
+                <MenuButton
+                  as={IconButton}
+                  aria-label="Attach file"
+                  icon={<AttachmentIcon />}
+                  variant="outline"
+                />
+                <MenuList>
+                  <MenuItem onClick={() => imageInputRef.current && imageInputRef.current.click()}>Image</MenuItem>
+                  <MenuItem onClick={() => docInputRef.current && docInputRef.current.click()}>Document (PDF)</MenuItem>
+                  <MenuItem onClick={() => videoInputRef.current && videoInputRef.current.click()}>Video</MenuItem>
+                  <MenuItem onClick={() => zipInputRef.current && zipInputRef.current.click()}>Archive (ZIP)</MenuItem>
+                </MenuList>
+              </Menu>
               {selectedFileName ? (
                 <Text
                   fontSize="sm"
@@ -702,8 +741,42 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
                 </Text>
               ) : null}
               <input
-                ref={fileInputRef}
+                ref={imageInputRef}
                 type="file"
+                accept="image/*"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files && e.target.files[0];
+                  setSelectedFileName(f ? f.name : "");
+                  sendFile(e);
+                }}
+              />
+              <input
+                ref={docInputRef}
+                type="file"
+                accept="application/pdf"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files && e.target.files[0];
+                  setSelectedFileName(f ? f.name : "");
+                  sendFile(e);
+                }}
+              />
+              <input
+                ref={videoInputRef}
+                type="file"
+                accept="video/*"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files && e.target.files[0];
+                  setSelectedFileName(f ? f.name : "");
+                  sendFile(e);
+                }}
+              />
+              <input
+                ref={zipInputRef}
+                type="file"
+                accept=".zip,application/zip,application/x-zip-compressed"
                 style={{ display: "none" }}
                 onChange={(e) => {
                   const f = e.target.files && e.target.files[0];
