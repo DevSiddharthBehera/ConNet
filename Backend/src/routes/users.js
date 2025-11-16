@@ -31,10 +31,11 @@ router.patch("/me", authenticateToken, async (req, res) => {
     const updates = {};
     if (typeof displayName !== "undefined") updates.displayName = displayName;
     if (typeof about !== "undefined") updates.about = about;
-    const updated = await User.findByIdAndUpdate(req.user.id, updates, {
-      new: true,
-      fields: "username displayName avatar about createdAt",
-    });
+    const updated = await User.findByIdAndUpdate(
+      req.user.id,
+      updates,
+      { new: true }
+    ).select("username displayName avatar about createdAt");
     if (!updated) return res.status(404).json({ message: "User not found" });
     res.json({
       id: updated._id.toString(),

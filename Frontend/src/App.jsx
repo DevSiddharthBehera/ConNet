@@ -12,26 +12,7 @@ function App() {
   );
   const [selected, setSelected] = useState(null); // { id, displayName }
 
-  useEffect(() => {
-    if (token) localStorage.setItem("token", token);
-    else localStorage.removeItem("token");
-  }, [token]);
-
-  useEffect(() => {
-    if (user) localStorage.setItem("user", JSON.stringify(user));
-    else localStorage.removeItem("user");
-  }, [user]);
-
-  if (!token)
-    return (
-      <Login
-        onAuth={(t, u) => {
-          setToken(t);
-          setUser(u);
-        }}
-      />
-    );
-
+  // All hooks MUST be called before any conditional returns
   const bpIsMobile = useBreakpointValue({ base: true, md: false });
   const [isMobile, setIsMobile] = useState(() => {
     try {
@@ -41,6 +22,16 @@ function App() {
     }
   });
   const [mobileView, setMobileView] = useState("list"); // 'list' or 'chat'
+
+  useEffect(() => {
+    if (token) localStorage.setItem("token", token);
+    else localStorage.removeItem("token");
+  }, [token]);
+
+  useEffect(() => {
+    if (user) localStorage.setItem("user", JSON.stringify(user));
+    else localStorage.removeItem("user");
+  }, [user]);
 
   useEffect(() => {
     // keep breakpoint value in sync when Chakra provides it
@@ -54,6 +45,17 @@ function App() {
   }, []);
 
   useEffect(() => {}, [selected]);
+
+  // Conditional return AFTER all hooks
+  if (!token)
+    return (
+      <Login
+        onAuth={(t, u) => {
+          setToken(t);
+          setUser(u);
+        }}
+      />
+    );
 
   return (
     <Box minH="100vh" bg="gray.50">

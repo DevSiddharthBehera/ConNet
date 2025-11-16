@@ -71,11 +71,16 @@ export default function Login({ onAuth }) {
   useEffect(() => {
     function handleMessage(e) {
       try {
-        const origin = window.location.origin;
-        // only accept messages from frontend origin
-        if (e.origin !== origin) return;
+        // Accept messages from backend (OAuth popup) or frontend origin
+        const backendOrigin = API.defaults.baseURL.replace(/\/api$/, '');
+        const frontendOrigin = window.location.origin;
+        if (e.origin !== backendOrigin && e.origin !== frontendOrigin) {
+          console.log('Rejected message from:', e.origin);
+          return;
+        }
         const { token, user } = e.data || {};
-        if (token) {
+        if (token && user) {
+          console.log('OAuth success, logging in');
           onAuth(token, user);
         }
       } catch (err) {

@@ -3,17 +3,20 @@ const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const authRoutes = require("./routes/auth");
+const dbReady = require("./middleware/dbReady");
 const { initSocket } = require("./socket/socket");
 const { authenticateToken } = require("./middleware/auth");
 const path = require("path");
 require("dotenv").config();
-const { connect } = require("./db");
+const { connect, mongoose, status: dbStatus } = require("./db");
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
+// Return 503 for API requests while DB is not connected to avoid Mongoose buffering timeouts
+app.use(dbReady);
 app.use("/api/auth", authRoutes);
 const filesRoutes = require("./routes/files");
 app.use("/api/files", filesRoutes);
@@ -65,8 +68,34 @@ initSocket(io);
 
 const PORT = process.env.PORT || 4000;
 
+// Health endpoint
+app.get('/health', (req, res) => {
+  const stateMap = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting'
+  };
+  const s = dbStatus();
+  const dbState = s.readyState;
+  return res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    db: {
+      state: stateMap[dbState] || 'unknown',
+      readyState: dbState,
+      lastError: s.lastError,
+      attempts: s.attempts,
+      target: s.target
+    }
+  });
+});
+
 (async () => {
-  await connect();
+  // Start DB connection in background so the server can start even if DB is temporarily unreachable.
+  // The `connect` function will retry and log errors without exiting the process.
+  connect();
+
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
