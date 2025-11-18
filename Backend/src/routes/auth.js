@@ -184,7 +184,34 @@ router.get("/google/callback", async (req, res) => {
 
     // If opened as popup, postMessage back to opener and close
     if (popup) {
-      const frontend = process.env.FRONTEND_URL || "http://localhost:5173";
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+      const backendUrl = process.env.BACKEND_URL || "http://localhost:4000";
+
+      const normalizeOrigin = (value) => {
+        if (!value || typeof value !== "string") return null;
+        try {
+          return new URL(value).origin;
+        } catch (err) {
+          return null;
+        }
+      };
+
+      const candidateOrigins = [
+        frontendUrl,
+        backendUrl,
+        req.get("origin"),
+        req.get("referer") || req.get("referrer"),
+      ];
+
+      const targetOrigins = Array.from(
+        new Set(candidateOrigins.map(normalizeOrigin).filter(Boolean)),
+      );
+
+      if (!targetOrigins.length) {
+        const fallback = normalizeOrigin(frontendUrl) || "http://localhost:5173";
+        targetOrigins.push(fallback);
+      }
+
       return res.send(
         `<!doctype html><html><body><script>
         (function() {
@@ -193,9 +220,16 @@ router.get("/google/callback", async (req, res) => {
               document.body.innerHTML = '<h3>Error: Popup opened incorrectly. Please try again.</h3>';
               return;
             }
-            var data = ${JSON.stringify({ token, user: userPayload })};
-            console.log('Posting message to opener:', data);
-            window.opener.postMessage(data, '${frontend}');
+            var payload = ${JSON.stringify({ token, user: userPayload })};
+            var targetOrigins = ${JSON.stringify(targetOrigins)};
+            console.log('Posting OAuth payload to origins:', targetOrigins);
+            targetOrigins.forEach(function(origin) {
+              try {
+                window.opener.postMessage(payload, origin);
+              } catch (err) {
+                console.warn('postMessage failed for origin', origin, err);
+              }
+            });
             document.body.innerHTML = '<h3>Success! Closing window...</h3>';
             setTimeout(function() { window.close(); }, 500);
           } catch(e) {
