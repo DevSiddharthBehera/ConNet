@@ -115,7 +115,27 @@ async function findOrCreateOAuthUser({ provider, id, name, email }) {
 
 // redirect to provider
 router.get("/google", (req, res) => {
-  const popup = req.query.popup;
+  const popupParam = req.query.popup;
+  const originParam = req.query.origin;
+  const wantsPopup =
+    popupParam !== undefined &&
+    popupParam !== null &&
+    String(popupParam).toLowerCase() !== "false" &&
+    String(popupParam) !== "0";
+
+  const statePayload = { popup: wantsPopup };
+  if (originParam && typeof originParam === "string") {
+    statePayload.origin = originParam;
+  }
+
+  let stateValue = "redirect";
+  try {
+    stateValue = Buffer.from(JSON.stringify(statePayload)).toString("base64url");
+  } catch (err) {
+    console.error("Failed to encode OAuth state payload", err);
+    stateValue = wantsPopup ? "popup" : "redirect";
+  }
+
   const backendUrl = process.env.BACKEND_URL || "http://localhost:4000";
   // Don't include query params in redirect_uri - use state parameter instead
   const redirectUri = `${backendUrl}/api/auth/google/callback`;
@@ -125,10 +145,10 @@ router.get("/google", (req, res) => {
     response_type: "code",
     scope: "openid profile email",
     prompt: "select_account",
-    state: popup ? 'popup' : 'redirect', // Pass popup state to callback
+    state: stateValue,
   });
   const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-  if (popup) return res.redirect(url);
+  if (wantsPopup) return res.redirect(url);
   res.json({ url });
 });
 
@@ -136,7 +156,23 @@ router.get("/google/callback", async (req, res) => {
   try {
     const code = req.query.code;
     const state = req.query.state;
-    const popup = state === 'popup';
+    let statePayload = {};
+    if (state) {
+      try {
+        statePayload = JSON.parse(Buffer.from(state, "base64url").toString("utf8"));
+      } catch (err) {
+        try {
+          statePayload = JSON.parse(Buffer.from(state, "base64").toString("utf8"));
+        } catch (err2) {
+          if (state === "popup" || state === "redirect") {
+            statePayload.popup = state === "popup";
+          }
+        }
+      }
+    }
+
+    const popup = Boolean(statePayload.popup);
+    const originFromState = typeof statePayload.origin === "string" ? statePayload.origin : null;
     const backendUrl = process.env.BACKEND_URL || "http://localhost:4000";
     // Must match exactly what's registered in Google Console
     const redirectUri = `${backendUrl}/api/auth/google/callback`;
@@ -196,34 +232,39 @@ router.get("/google/callback", async (req, res) => {
         }
       };
 
-      const knownOrigins = [frontendUrl, backendUrl].map(normalizeOrigin).filter(Boolean);
-      const allowedHosts = new Set(knownOrigins.map((origin) => new URL(origin).host));
+      const fallbackOrigins = [frontendUrl, backendUrl].map(normalizeOrigin).filter(Boolean);
+      const allowedHosts = new Set(
+        fallbackOrigins.map((origin) => {
+          try {
+            return new URL(origin).host;
+          } catch (err) {
+            return null;
+          }
+        }).filter(Boolean),
+      );
 
-      const candidateOrigins = [
-        frontendUrl,
-        backendUrl,
-        req.get("origin"),
-        req.get("referer") || req.get("referrer"),
-      ];
+      const preferredOrigin = normalizeOrigin(originFromState);
+      const requestOrigin = normalizeOrigin(req.get("origin"));
+      const refererOrigin = normalizeOrigin(req.get("referer") || req.get("referrer"));
+
+      const candidateOrigins = [preferredOrigin, requestOrigin, refererOrigin, ...fallbackOrigins];
 
       const targetOrigins = Array.from(
         new Set(
-          candidateOrigins
-            .map(normalizeOrigin)
-            .filter((origin) => {
-              if (!origin) return false;
-              try {
-                const host = new URL(origin).host;
-                return allowedHosts.has(host);
-              } catch (err) {
-                return false;
-              }
-            }),
+          candidateOrigins.filter((origin) => {
+            if (!origin) return false;
+            try {
+              const host = new URL(origin).host;
+              return allowedHosts.has(host);
+            } catch (err) {
+              return false;
+            }
+          }),
         ),
       );
 
       if (!targetOrigins.length) {
-        const fallback = normalizeOrigin(frontendUrl) || "http://localhost:5173";
+        const fallback = fallbackOrigins[0] || "http://localhost:5173";
         targetOrigins.push(fallback);
       }
 
