@@ -157,6 +157,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
   const pendingP2PTransfersRef = useRef(new Map());
   const incomingP2PChunksRef = useRef(new Map());
   const objectUrlsRef = useRef([]);
+  const pendingIceCandidatesRef = useRef([]);
 
   useEffect(() => {
     return () => {
@@ -584,6 +585,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
 
     // WebRTC signalling
     s.on("incoming-call", ({ from, offer }) => {
+      pendingIceCandidatesRef.current = [];
       setIncomingCall({ from, offer });
       setMessages((prev) => [
         ...prev,
@@ -595,7 +597,14 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       const peer = pcRef.current;
       if (peer) {
         try {
+          if (peer.remoteDescription && peer.remoteDescription.type === "answer") {
+            return;
+          }
+          if (peer.signalingState === "stable" && peer.remoteDescription) {
+            return;
+          }
           await peer.setRemoteDescription(answer);
+          await flushPendingIceCandidates(peer);
         } catch (err) {
           console.error("call-answered remote desc error", err);
         }
@@ -606,15 +615,26 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
     });
 
     s.on("ice-candidate", async ({ from, candidate }) => {
+      if (!candidate) return;
+      const fromIdRaw = from?.id || from?._id || from;
+      const fromId = fromIdRaw ? String(fromIdRaw) : null;
+      const targetId = callPeerIdRef.current
+        ? String(callPeerIdRef.current)
+        : null;
+      if (targetId && fromId && targetId !== fromId) return;
+
       const peer = pcRef.current;
-      if (peer && candidate) {
+      if (peer) {
         try {
           await peer.addIceCandidate(candidate);
         } catch (err) {
           console.error("Add ICE error", err);
         }
-      } else if (!peer) {
-        console.warn("ice-candidate received but pcRef.current is null");
+      } else {
+        pendingIceCandidatesRef.current = [
+          ...pendingIceCandidatesRef.current,
+          { candidate, fromId },
+        ];
       }
     });
 
@@ -722,6 +742,29 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
 
   function removeP2PFile(index) {
     setP2pFiles((prev) => prev.filter((_, idx) => idx !== index));
+  }
+
+  async function flushPendingIceCandidates(peer) {
+    if (!peer) return;
+    const queue = pendingIceCandidatesRef.current || [];
+    if (!queue.length) return;
+    pendingIceCandidatesRef.current = [];
+    const currentPeerId = callPeerIdRef.current
+      ? String(callPeerIdRef.current)
+      : null;
+    for (let i = 0; i < queue.length; i += 1) {
+      const entry = queue[i];
+      const candidate = entry?.candidate || entry;
+      const fromId = entry?.fromId ? String(entry.fromId) : null;
+      if (!candidate) continue;
+      if (currentPeerId && fromId && currentPeerId !== fromId) continue;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await peer.addIceCandidate(candidate);
+      } catch (err) {
+        console.error("Flush ICE error", err);
+      }
+    }
   }
 
   async function streamFileOverSocket(file, destId, requestId, fileId) {
@@ -1009,6 +1052,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       return;
     }
     try {
+      pendingIceCandidatesRef.current = [];
       const local = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: true,
@@ -1044,6 +1088,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       const answer = await newPc.createAnswer();
       await newPc.setLocalDescription(answer);
       activeSocket.emit("answer-call", { to: from.id, answer });
+      await flushPendingIceCandidates(newPc);
       setInCall(true);
       setIncomingCall(null);
     } catch (err) {
@@ -1072,6 +1117,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
       setInCall(false);
       setCallActive(false);
       setVideoPlaying({ local: false, remote: false });
+      pendingIceCandidatesRef.current = [];
       // Emit end-call to the other user's id (not the room/self id)
       const activeSocket = socketRef.current;
       if (emit && activeSocket && callPeerIdRef.current) {
