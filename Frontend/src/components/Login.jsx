@@ -92,10 +92,15 @@ export default function Login({ onAuth }) {
   }, [onAuth]);
 
   function openOAuth(provider) {
-    const backendOrigin = API.defaults.baseURL.replace(/\/?api$/, "");
+    const backendOrigin = API.defaults.baseURL
+      ? API.defaults.baseURL.replace(/\/?api$/, "")
+      : window.location.origin;
     const currentOrigin = window.location.origin;
     const params = new URLSearchParams({ popup: "1", origin: currentOrigin });
-    const url = `${backendOrigin}/auth/${provider}?${params.toString()}`;
+    const oauthUrl = `${backendOrigin}/api/auth/${provider}?${params.toString()}`;
+    const url = oauthUrl.startsWith("http")
+      ? oauthUrl
+      : `${window.location.origin.replace(/\/?$/, "")}${oauthUrl.startsWith("/") ? "" : "/"}${oauthUrl}`;
     const popup = window.open(url, "oauth", "width=500,height=600");
     if (!popup) {
       toast({
