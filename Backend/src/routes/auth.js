@@ -196,6 +196,9 @@ router.get("/google/callback", async (req, res) => {
         }
       };
 
+      const knownOrigins = [frontendUrl, backendUrl].map(normalizeOrigin).filter(Boolean);
+      const allowedHosts = new Set(knownOrigins.map((origin) => new URL(origin).host));
+
       const candidateOrigins = [
         frontendUrl,
         backendUrl,
@@ -204,7 +207,19 @@ router.get("/google/callback", async (req, res) => {
       ];
 
       const targetOrigins = Array.from(
-        new Set(candidateOrigins.map(normalizeOrigin).filter(Boolean)),
+        new Set(
+          candidateOrigins
+            .map(normalizeOrigin)
+            .filter((origin) => {
+              if (!origin) return false;
+              try {
+                const host = new URL(origin).host;
+                return allowedHosts.has(host);
+              } catch (err) {
+                return false;
+              }
+            }),
+        ),
       );
 
       if (!targetOrigins.length) {
