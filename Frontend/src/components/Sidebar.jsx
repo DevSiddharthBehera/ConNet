@@ -26,6 +26,7 @@ import {
 import { AddIcon, EditIcon } from "@chakra-ui/icons";
 import { io } from "socket.io-client";
 import API from "../api";
+import { SOCKET_URL } from "../config";
 import Cropper from "react-easy-crop";
 import SecureAvatar from "./SecureAvatar";
 
@@ -173,7 +174,7 @@ export default function Sidebar({ token, user, selected, onSelect, isMobile }) {
 
   useEffect(() => {
     if (!token) return;
-    const s = io("http://localhost:4000", { auth: { token } });
+    const s = io(SOCKET_URL, { auth: { token } });
     setSocket(s);
 
     s.on("online-list", (list) => {

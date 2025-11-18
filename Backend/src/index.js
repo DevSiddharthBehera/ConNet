@@ -7,8 +7,11 @@ const dbReady = require("./middleware/dbReady");
 const { initSocket } = require("./socket/socket");
 const { authenticateToken } = require("./middleware/auth");
 const path = require("path");
+const fs = require("fs");
 require("dotenv").config();
 const { connect, mongoose, status: dbStatus } = require("./db");
+
+const __dirname1 = path.resolve(__dirname, "..");
 
 const app = express();
 app.use(cors());
@@ -90,6 +93,40 @@ app.get('/health', (req, res) => {
     }
   });
 });
+
+if (process.env.NODE_ENV === "production") {
+  const frontendRoot = path.resolve(__dirname1, "..", "Frontend");
+  const viteDistDir = path.join(frontendRoot, "dist");
+  const craBuildDir = path.join(frontendRoot, "build");
+  const staticDir = [viteDistDir, craBuildDir].find((dir) => fs.existsSync(dir));
+
+  if (staticDir) {
+    app.use(express.static(staticDir));
+    app.get("*", (req, res, next) => {
+      if (
+        req.path.startsWith("/api") ||
+        req.path.startsWith("/uploads") ||
+        req.path.startsWith("/socket.io") ||
+        req.path === "/health"
+      ) {
+        return next();
+      }
+      const indexFile = path.join(staticDir, "index.html");
+      return res.sendFile(indexFile, (err) => {
+        if (err) next(err);
+      });
+    });
+  } else {
+    console.warn(
+      `Frontend build not found. Expected ${viteDistDir} or ${craBuildDir}. ` +
+        "Run 'npm run build' inside the Frontend directory before starting the server.",
+    );
+  }
+} else {
+  app.get("/", (req, res) => {
+    res.send("API started successfully");
+  });
+}
 
 (async () => {
   // Start DB connection in background so the server can start even if DB is temporarily unreachable.
