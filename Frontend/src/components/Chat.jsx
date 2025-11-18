@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import ApiClient from "../api";
+import { SOCKET_URL } from "../config";
 import {
   Button,
   Box,
@@ -214,7 +215,7 @@ export default function Chat({ token, user, to, recipient, isMobile, onBack }) {
   } = useDisclosure();
 
   useEffect(() => {
-    const s = io("http://localhost:4000", { auth: { token } });
+    const s = io(SOCKET_URL, { auth: { token } });
     socketRef.current = s;
     setSocket(s);
 
